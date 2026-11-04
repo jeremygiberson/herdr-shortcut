@@ -232,6 +232,7 @@ Tests in `herdr-projects/test`: launch request parsing, project resolution by fo
 - Archived story: shown greyed in Recent, start refuses.
 - `startPrompt` empty: no prompt is passed; the launcher starts its agent bare or not at all.
 - `branchTemplate` producing an invalid ref (checked with `git check-ref-format --branch` via `exec`): start refuses and points at settings.
+- Empty `repo` hints are the common case: an unstarted story has no branches or PRs. The projects launcher then shows its list with the banner, and the shipped path uses the selected space. No team/epic/label-to-project mapping in v1 (see follow-ups).
 - The configured launcher mod folder is gone: start shows "launcher ‹name› is not installed" with a link to settings; it does not fall back silently.
 - Shared machines: not supported; `machine` is always null.
 
@@ -239,13 +240,15 @@ Tests in `herdr-projects/test`: launch request parsing, project resolution by fo
 
 - `node --test test/` with a fake `herdr` module (copy herdr-projects' `test/helpers` approach): `normalize()`, token resolution (env name validation, pasted token wins), template expansion and slugging, start-update construction (owner append, no removal, iteration candidates), launch request building for both launcher kinds, API client error mapping with a fake `fetch`, paging.
 - `herdr-app check shortcut` after every change; `herdr-app shot` to look at list, story, create, settings, pickState.
-- A manual run against the real workspace on a throwaway story: start it, confirm state/owner/iteration in the web UI, confirm the branch and space, confirm the prompt arrived (projects launcher) or the shell opened in the worktree (shipped launcher).
+- Live calls against the real workspace: read-only calls (`GET /member`, workflows, searches) may run freely with the shell's token. Writes (`PUT`, `POST`) run only against a story the person names at that moment; the plan's live-verification task asks for one before any write and never creates stories on its own. The API client's own tests use a fake `fetch`.
+- Response shapes were checked against Shortcut's v3 OpenAPI document during design: `pull_requests[]` and `branches[]` on a story, `workflow_state_types`, `group_ids`, `epic_ids` and `iteration_ids` in the search body, `custom_fields` on create and update.
 
 ## 12. Follow-ups (separate work, not in this plan)
 
 1. **Fork the installed `github` mod** (`~/.config/herdr-app/mods/github`) so it reads the same `launcher` setting (or its own copy of it) and, when a PR is picked for review, hands `{ branch: pr.headRefName, checkout: "existing", prompt: <its review prompt>, source: { kind: "github", … }, repo: { urls: [pr.repoUrl] } }` to the launcher instead of making its own worktree and picking the first agent. Record the fork in `CUSTOMIZATIONS.md`.
 2. **Prompt relay for the shipped path.** The finder could leave `{ branch, prompt, source }` in `shared("launch.pending")` and the projects watcher, when it builds a space whose branch matches, could type the prompt. Makes the shipped path complete without coupling. Needs its own small design.
 3. Multiple machines (`machine` in the contract and in the shipped-launcher props).
+4. A settings mapping from Shortcut team, epic or label to a project name, so `launch.repo.names` is filled on first starts and the projects launcher can skip its list.
 
 ## 13. Calls I made (check these while reading)
 
