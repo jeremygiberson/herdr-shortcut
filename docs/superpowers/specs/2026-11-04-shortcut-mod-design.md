@@ -188,17 +188,17 @@ where `space` is the selected space's id and `folder` is that space's working fo
 2. `GET /stories/{id}` fresh, so the update is built from current data.
 3. Find `startStates[story.workflow_id]`. Missing → pickState; on Enter persist and continue; Esc aborts.
 4. Build the update:
-   - `workflow_state_id`: the configured state, only if different from the story's current one.
+   - `workflow_state_id`: the configured start state, only when the story's current state is of type `backlog` or `unstarted`. A story already in a `started` state keeps its state, and the start notes say "state kept: ‹name›". A story in a `done` state is **refused**: the story screen shows "sc-1234 is done. Follow-up work belongs in a new story." and no update or launch happens. (A "create follow-up story" action is a possible later addition.)
    - `owner_ids`: `story.owner_ids` plus my id, only if I am not already in it. Order preserved, me appended.
    - `iteration_id`: only when `iteration === "current-if-unset"`, `story.iteration_id` is null, and exactly one iteration has `status: "started"` and (if the story has a `group_id`) lists that group in `group_ids`, or has no groups at all. Zero or several candidates → leave the iteration alone and show "iteration not set: ‹reason›" in the start notes; never guess.
 5. If the update is non-empty, `PUT /stories/{id}`. On error: show it on the story screen, stop.
-6. Expand `branchTemplate` and `startPrompt` with the story; `checkout` is `"existing"` when a `story.branches[]` entry or an open `pull_requests[]` `branch_name` equals the expanded branch, else `"new"`. `repo` hints come from `story.branches[].url` and `pull_requests[].url` (repo name = the path segment before `/pull/` or `/tree/`), empty when none.
+6. Choose the branch, in this order: the `branch_name` of an open pull request on the story (`merged: false`, `closed: false`); else a branch listed in `story.branches[]`; else the expanded `branchTemplate`. When more than one candidate exists at the chosen level, the start screen lists them and asks which to use (Esc aborts). A reused branch gives `checkout: "existing"`; the template gives `"new"`. Then expand `startPrompt` (its `{branch}` is the chosen branch). `repo` hints come from `story.branches[].url` and `pull_requests[].url` (repo name = the path segment before `/pull/` or `/tree/`), empty when none.
 7. Push `{ id, at }` to `recent`, save settings.
 8. Open the launcher (section 7), then close the popup.
 
 ### 8.2 Starting an already-started story
 
-Allowed. Step 4 then changes nothing on Shortcut (state already set, me already owner) and the launcher is opened as usual; with `checkout: "existing"` when the branch is known. This is how "resume work" happens.
+Allowed. Step 4 keeps the state, adds me as owner if needed, and the launcher is opened as usual, with `checkout: "existing"` when a PR or story branch exists. This is how "resume work" happens. Starting a `done` story is refused (step 4).
 
 ### 8.3 The `projects` mod launch entry
 
@@ -229,7 +229,7 @@ Tests in `herdr-projects/test`: launch request parsing, project resolution by fo
 - No network / 5xx: the list keeps showing the cache with a "offline, showing cached" line; start refuses with the error.
 - 429: wait for `Retry-After` once, then show the error. The mod never retries in a loop.
 - A story in a workflow whose configured start state no longer exists: treat as unconfigured (pickState) and drop the stale entry.
-- Archived story: shown greyed in Recent, start refuses.
+- Archived story: shown greyed in Recent, start refuses. Done story: start refuses (section 8.1).
 - `startPrompt` empty: no prompt is passed; the launcher starts its agent bare or not at all.
 - `branchTemplate` producing an invalid ref (checked with `git check-ref-format --branch` via `exec`): start refuses and points at settings.
 - Empty `repo` hints are the common case: an unstarted story has no branches or PRs. The projects launcher then shows its list with the banner, and the shipped path uses the selected space. No team/epic/label-to-project mapping in v1 (see follow-ups).
@@ -256,6 +256,8 @@ Tests in `herdr-projects/test`: launch request parsing, project resolution by fo
 - Default global key `cmd-alt-s`.
 - Default token source is the `SHORTCUT_API_TOKEN` environment variable (it exists in your shell today); a pasted token is stored in `data/shortcut.json` with mode 0600.
 - Default branch template `{mention}/sc-{id}/{slug}` since this workspace returns no `formatted_vcs_branch_name`.
+- Start never moves a story backwards: the state changes only from backlog/unstarted states, and done stories are refused (your decision).
+- On resume, an open PR's branch wins over a story branch, which wins over the template; several candidates ask (your decision).
 - Iteration is set only when exactly one started iteration fits the story's team; otherwise it is left alone and said so.
 - The projects launch entry shows the launch screen prefilled and waits for Enter rather than launching at once.
 - The projects launcher ignores `launch.name`; its own space-name template wins.
