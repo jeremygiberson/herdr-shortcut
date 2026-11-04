@@ -8,7 +8,7 @@
 
 **Tech Stack:** JavaScript ES modules on gpui-kit / gpui-base inside herdr-app 0.1.13 with hc 0.1.18; `fetch` (built-in to mods); `node --test test/*.test.mjs`; `herdr-app check mods/shortcut`; git.
 
-**Spec:** `docs/superpowers/specs/2026-11-04-shortcut-mod-design.md`. The projects mod's launch entry (spec 8.3) is built first from `~/gitprojects/herdr-projects/docs/superpowers/plans/2026-11-04-launch-by-props.md`; Task 11 of this plan needs it installed.
+**Spec:** `docs/superpowers/specs/2026-11-04-shortcut-mod-design.md`. One addition to its file list: `start.js` holds the Shortcut-side start rules so they are testable without the view; `launch.js` keeps only the handoff. The projects mod's launch entry (spec 8.3) is built first from `~/gitprojects/herdr-projects/docs/superpowers/plans/2026-11-04-launch-by-props.md`; Task 11 of this plan needs it installed.
 
 ## Global Constraints
 
@@ -17,7 +17,7 @@
 - Start never removes an owner, never moves a story backwards (state changes only from `backlog`/`unstarted` states), refuses `done` stories, and sets an iteration only when exactly one started iteration fits.
 - The mod passes nothing about agents, worktree roots, base branches or setup to a launcher. The shipped path passes `{ folder, machine: null, branch, space }` only.
 - Launch contract v1 exactly as spec section 7; `backTo` is `{ mod: "shortcut", props: { screen: "story", id } }`.
-- Defaults (spec section 5): env var `SHORTCUT_API_TOKEN`; prompt `Read the shortcut story {id} for context, then suggest how to proceed.`; branch `{mention}/sc-{id}/{slug}`; iteration `current-if-unset`; launcher `{ kind: "shipped" }`; recent keeps 30.
+- Defaults (spec section 5): env var `SHORTCUT_API_TOKEN`; prompt `Read the shortcut story {id} for context, then suggest how to proceed.`; branch `{mention}/sc-{number}/{slug}`; iteration `current-if-unset`; launcher `{ kind: "shipped" }`; recent keeps 30.
 - No `setTimeout`; `cx` is kept only as `this.cx` set once in `init` (herdr-projects' pattern); `herdr-app check mods/shortcut` after every task that touches `mods/`; one commit per task on `main` (new repo, no branch needed).
 - Visuals follow herdr-linear's `look.js` and icon set under its MIT license, attribution in `LICENSE-herdr-linear`.
 
@@ -41,7 +41,7 @@
 **Interfaces:**
 - Produces `test/helpers/herdr-stub.mjs`: `state` (`{ home, appHome, spaces, panes, props, runs, overlays, closed, commands, known }`), `reset()`, and the `herdr` exports `appHome, home, spaces, panes, props, run, exec (real child_process), openOverlay (push to state.overlays), closeOverlay (state.closed++), theme (the object herdr-projects' stub returns), readTextFile, writeTextFile, knownAgents, nextCommand (resolves the next item pushed to state.commands via pushCommand(c)), shared, setShared`. `setup.mjs` also installs `globalThis.localStorage` (Map-backed `getItem/setItem/removeItem`).
 - Produces `test/helpers/fetch.mjs`: `fakeApi(routes) → fetch`, where `routes` maps `"GET /member"`, `"POST /stories/search"`, … to a value or `(body, url) => value | { status, body }`; `fetch.calls` records `{ method, path, headers, body }`.
-- Produces `test/helpers/view.mjs`: `open({ cfg = {}, routes = {}, props = {} }) → { v, cx, fetch }`: writes `data/shortcut.json` from `cfg` (merged over nothing, so tests state what they need), sets `globalThis.fetch = fakeApi(routes)`, inits the view with the fake `cx` from herdr-projects' `ui.test.mjs` plus `open_url(url)` and `write_to_clipboard(text)` recorders, settles. Also `press(v, cx, key, mods)`, `texts(v)`.
+- Produces `test/helpers/view.mjs`: `open({ cfg = {}, routes = {}, props = {}, space = null, settle = true }) → { v, cx, fetch }`: `space`, when given, is pushed into `state.spaces` with `active: true`; `settle: false` returns right after `init` so a test can look at the first render; writes `data/shortcut.json` from `cfg` (merged over nothing, so tests state what they need), sets `globalThis.fetch = fakeApi(routes)`, inits the view with the fake `cx` from herdr-projects' `ui.test.mjs` plus `open_url(url)` and `write_to_clipboard(text)` recorders, settles. Also `press(v, cx, key, mods)`, `texts(v)`.
 - Produces `look.js`: herdr-linear's exports minus Linear specifics: `MONO, tint, tones, icon, chip, words, cap, key, countPill, ago`, plus `stateIcon(type)` → `"sc-backlog" | "sc-todo" | "sc-prog" | "sc-done"` (the `lin-*` SVGs renamed) and `stateColor(o, type)` → backlog `o.dim`, unstarted `o.accent`, started `o.work`, done `o.review`.
 
 - [ ] **Step 1: Write the failing smoke test**
@@ -107,7 +107,7 @@ test("normalize fills defaults and drops unknown keys", () => {
   assert.equal(c.bogus, undefined);
   assert.deepEqual(c.auth, { env: "SHORTCUT_API_TOKEN" });
   assert.equal(c.startPrompt, "Read the shortcut story {id} for context, then suggest how to proceed.");
-  assert.equal(c.branchTemplate, "{mention}/sc-{id}/{slug}");
+  assert.equal(c.branchTemplate, "{mention}/sc-{number}/{slug}");
   assert.deepEqual(c.startStates, { 5: 7 });
   assert.deepEqual(c.launcher, { kind: "mod", name: "projects" });
   assert.deepEqual(normalize({ launcher: { kind: "weird" } }).launcher, { kind: "shipped" });
@@ -137,7 +137,7 @@ test("slug and templates", () => {
   assert.equal(expand("{mention}/sc-{id}/{slug} {number} {url} {branch} {nope}", vars), "jer/sc-sc-12/fix-it 12 https://x/story/12 jer/sc-12/fix-it {nope}");
 });
 ```
-(Note the last assertion: `{id}` expands to `sc-12`, so the default branch template is `{mention}/sc-{number}/{slug}` — **correction to the spec's default**: use `{mention}/sc-{number}/{slug}` as `DEFAULTS.branchTemplate` and in the settings hint; `{id}` stays `sc-12` for prompts. Update spec section 5 and 13 in the same commit.)
+(`{id}` expands to `sc-12`; the default branch template is therefore `{mention}/sc-{number}/{slug}`, as the spec says.)
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -154,7 +154,7 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mods/shortcut/config.js test/config.test.mjs docs/superpowers/specs/2026-11-04-shortcut-mod-design.md
+git add mods/shortcut/config.js test/config.test.mjs
 git commit -m "Settings file, token resolution and templates"
 ```
 
@@ -238,13 +238,13 @@ git commit -m "Shortcut v3 client with paging, 429 backoff and a cache file"
 ### Task 4: What Start changes, and which branch (`start.js`)
 
 **Files:**
-- Create: `mods/shortcut/start.js`
+- Create: `mods/shortcut/start.js`, `test/helpers/fixtures.mjs` (exports `WF`, the workflow below; `S(id, name, stateId)`, a story with `workflow_id: 1`, `owner_ids: ["me"]`, `name`, `app_url: "https://app.shortcut.com/w/story/<id>"`, empty `labels`, `branches`, `pull_requests`, `custom_fields`; `basic()`, the route map Task 6 describes)
 - Test: `test/start.test.mjs`
 
 **Interfaces:**
 - Consumes: `storyVars`, `expand` (Task 2).
 - Produces:
-  - `startDecision({ story, workflow, me, cfg, iterations }) → { refused: string|null, patch: object|null, notes: string[], askState: boolean, dropStale: boolean }` where `workflow` is the story's workflow object (`{ id, name, states }`). Rules (spec 8.1 step 4): current state type `done` → `refused: "sc-<id> is done. Follow-up work belongs in a new story."`; configured state id not in `workflow.states` → `askState: true, dropStale: true`; no configured state → `askState: true`; state set only when current type ∈ backlog/unstarted (else note `state kept: <name>`); `owner_ids` = existing + `me.id` appended only if absent; iteration per `currentIteration`. `patch` is `null` when nothing changes.
+  - `startDecision({ story, workflow, me, cfg, iterations }) → { refused: string|null, patch: object|null, notes: string[], askState: boolean, dropStale: boolean }` where `workflow` is the story's workflow object (`{ id, name, states }`). Rules (spec 8.1 step 4): `story.archived` → `refused: "sc-<id> is archived."`; current state type `done` → `refused: "sc-<id> is done. Follow-up work belongs in a new story."`; configured state id not in `workflow.states` → `askState: true, dropStale: true`; no configured state → `askState: true`; state set only when current type ∈ backlog/unstarted (else note `state kept: <name>`); `owner_ids` = existing + `me.id` appended only if absent; iteration per `currentIteration`. `patch` is `null` when nothing changes.
   - `currentIteration(story, iterations) → { id: number } | { reason: string }`: candidates = `status === "started"` and (`group_ids` empty or includes `story.group_id`); one → id; zero → `"no started iteration for this team"`; several → `"<n> started iterations, none chosen"`.
   - `branchCandidates(story, cfg, vars) → { level: "pr"|"story"|"template", candidates: string[], checkout: "new"|"existing" }` (spec 8.1 step 6; PR level = `pull_requests` with `merged === false && closed === false`, deduplicated; story level = `story.branches[].name` deduplicated; template level = one expanded branch).
   - `repoHints(story) → { names: string[], urls: string[], folder: null }`: from `branches[].url` and `pull_requests[].url`, repo url = everything before `/pull/` or `/tree/` (or the whole url), name = its last path segment without `.git`, both deduplicated.
@@ -265,8 +265,9 @@ test("startDecision: a started story keeps its state; already an owner; nothing 
   const d = startDecision({ story: story({ workflow_state_id: 13, owner_ids: ["me"], iteration_id: 5 }), workflow: WF, me, cfg: cfg(), iterations: [] });
   assert.equal(d.patch, null); assert.deepEqual(d.notes, ["state kept: In Review"]);
 });
-test("startDecision: done is refused", () => {
+test("startDecision: done and archived are refused", () => {
   assert.equal(startDecision({ story: story({ workflow_state_id: 14 }), workflow: WF, me, cfg: cfg(), iterations: [] }).refused, "sc-7 is done. Follow-up work belongs in a new story.");
+  assert.equal(startDecision({ story: story({ archived: true }), workflow: WF, me, cfg: cfg(), iterations: [] }).refused, "sc-7 is archived.");
 });
 test("startDecision: stale state id asks again and is dropped; missing asks", () => {
   const stale = startDecision({ story: story(), workflow: WF, me, cfg: cfg({ startStates: { 1: 999 } }), iterations: [] });
@@ -400,13 +401,13 @@ git commit -m "Launch request, shipped-dialog preflight and the mod handoff"
 
 **Interfaces:**
 - Consumes: `load, save, resolveToken, storyVars` (Task 2); `createClient, readCache, writeCache, fresh` (Task 3); `tones, icon, chip, key, stateIcon, stateColor, countPill` (Task 1).
-- Produces on the view: `this.screen` ∈ `list | story | create | settings | pickState | signIn`; `this.tab` ∈ `mine | team | epics | recent` (persisted in `localStorage` key `tab`); `this.cfg`, `this.raw`, `this.client` (null until a token resolves), `this.ref` = `{ me, workflows, groups, epics, iterations, customFields }` (each `{ at, data }`), `this.lists[tab]` = `{ at, data, cut }`; `this.busy`, `this.err`, `this.flash` (one note line as herdr-linear); methods `boot(cx)` (load settings → token → client → `readCache` → render → `refreshAll(cx)`), `refreshAll(cx)` (reference data older than 10 min, the current tab older than 60 s), `load(tab, cx)`, `shownRows()` (`{ header }` and `{ story }` rows grouped by state in workflow position order, filtered by `this.filter` over `sc-<id>`, name, epic name, labels), `lookUp(cx)` (filter matching `/^(?:sc-|#)?(\d{1,9})$/i` fetches that story and offers it as the first row), `stateOf(story)` → the state object, `workflowOf(story)`, `say(text, cx, isErr)`, `escape(cx)`, `dismiss()`, `listKey(k, cx)`, `footer(o)`.
+- Produces on the view: `this.screen` ∈ `list | story | create | settings | pickState | signIn`; `this.tab` ∈ `mine | team | epics | recent` (persisted in `localStorage` key `tab`); `this.cfg`, `this.raw`, `this.client` (null until a token resolves), `this.ref` = `{ me, workflows, groups, epics, iterations, customFields }` (each `{ at, data }`), `this.lists[tab]` = `{ at, data, cut }`; `this.busy`, `this.err`, `this.flash` (one note line as herdr-linear); methods `boot(cx)` (load settings → token → client → `readCache` → render → `refreshAll(cx)`), `refreshAll(cx)` (reference data older than 10 min, the current tab older than 60 s), `load(tab, cx)`, `shownRows()` (`{ header }` and `{ story }` rows grouped by state in workflow position order, filtered by `this.filter` over `sc-<id>`, name, epic name, labels), `lookUp(cx)` (filter matching `/^(?:sc-|#)?(\d{1,9})$/i` fetches that story and offers it as the first row; a filter of 3+ characters with no local match runs `textSearch(filter)` after a 400 ms `cx.timer.after` debounce and lists the results under a `Workspace` header), `r` → `refreshAll`, `/` focuses the filter, `o` opens the highlighted story's `app_url`; a refresh that fails while cached data is shown sets `this.err = "offline, showing cached: <message>"`; `stateOf(story)` → the state object, `workflowOf(story)`, `say(text, cx, isErr)`, `escape(cx)`, `dismiss()`, `listKey(k, cx)`, `footer(o)`.
 - Key handling as herdr-linear: filter input's submit = Enter; `on_key_down` in `render` dispatches by screen; `nextCommand()` loop handles `escape`, `tab`, `backtab`.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```js
-// test/ui.test.mjs (append). A `routes` helper `basic()` returns: GET /member → { id: "me", mention_name: "jer", name: "Jer" }; GET /workflows → [WF from Task 4's test]; GET /groups, /epics, /iterations, /custom-fields → []; POST /stories/search → { data: [S(1,"Alpha",11), S(2,"Beta",12)], next: null } where S(id,name,state) builds a story with workflow_id 1 and owner_ids ["me"].
+// test/ui.test.mjs (append). From test/helpers/fixtures.mjs: `basic()` returns GET /member → { id: "me", mention_name: "jer", name: "Jer" }; GET /workflows → [WF]; GET /groups, /epics, /iterations, /custom-fields → []; GET /search/stories → { data: [], next: null }; POST /stories/search → { data: [S(1,"Alpha",11), S(2,"Beta",12)], next: null }.
 test("Mine renders the stories grouped by state, from the API", async () => {
   const { v, fetch } = await open({ cfg: { auth: { token: "T" } }, routes: basic() });
   const t = texts(v);
@@ -437,6 +438,14 @@ test("the filter narrows, and a story key looks it up workspace-wide", async () 
   v.input.set_value("beta"); assert.deepEqual(v.shownRows().filter((r) => r.story).map((r) => r.story.id), [2]);
   v.input.set_value("sc-42"); await cx.settle();
   assert.equal(v.shownRows()[0]?.story?.id, 42);
+});
+test("a text filter with no local match searches the workspace; a failed refresh keeps the cache with a note", async () => {
+  const { v, cx } = await open({ cfg: { auth: { token: "T" } }, routes: { ...basic(), "GET /search/stories": { data: [S(8, "Zeta far", 11)], next: null } } });
+  v.input.set_value("zeta"); cx.fire(400); await cx.settle();
+  assert.match(texts(v), /Workspace[\s\S]*sc-8/);
+  await writeCache({ member: { at: Date.now(), data: { id: "me", mention_name: "jer" } }, workflows: { at: Date.now(), data: [WF] }, lists: { mine: { at: 0, data: [S(5, "Cached", 11)] } } });
+  const down = await open({ cfg: { auth: { token: "T" } }, routes: { ...basic(), "POST /stories/search": { status: 503, body: {} } } });
+  assert.match(texts(down.v), /Cached/); assert.match(down.v.err, /^offline, showing cached/);
 });
 test("Esc closes from the list, and the footer lists the keys", async () => {
   const { v, cx } = await open({ cfg: { auth: { token: "T" } }, routes: basic() });
@@ -573,7 +582,7 @@ test("opened with props on a story, Esc goes back to the opener", async () => {
 
 **Interfaces:**
 - Consumes: `startDecision, branchCandidates, repoHints` (Task 4); `buildLaunchRequest, backTo, openLauncher` (Task 5); `save` (Task 2).
-- Produces: `startStory(story, cx)`: busy line `Starting sc-<id>…`; steps per spec 8.1: refetch → `startDecision` → refused: `say(refused, cx, true)`; `askState`: screen `pickState` with `this.pick = { story, workflow, resume }`, Enter persists `cfg.startStates[workflow.id]` (dropping a stale id), saves, resumes; patch → `updateStory`; `branchCandidates` with several → `this.menu = { kind: "branch", ... }` and resume with the chosen; prompt = `expand(cfg.startPrompt, storyVars(story, me, branch))`; push to `cfg.recent` (dedupe by id, newest first, 30) and save; `openLauncher`; `{ error }` → `say(error, cx, true)`; `{ ok, note }` → `note` flashed via `notify`-less `say` then `dismiss()` (the popup closes; a note is shown for 1.5 s with `cx.timer.after` before closing only when `note` is non-null). `s` from the list starts the highlighted story; `s` on the story screen starts `this.cur`.
+- Produces: `startStory(story, cx)`: busy line `Starting sc-<id>…`; steps per spec 8.1: refetch → `startDecision` → refused: `say(refused, cx, true)`; `askState`: screen `pickState` with `this.pick = { story, workflow, resume }`, Enter persists `cfg.startStates[workflow.id]` (dropping a stale id), saves, resumes; patch → `updateStory`; `branchCandidates` with several → `this.menu = { kind: "branch", ... }` and resume with the chosen; then `exec("git", ["check-ref-format", "--branch", branch])` nonzero → `say(\`"${branch}" is not a valid branch name: check the branch template in settings\`, cx, true)` and stop; prompt = `expand(cfg.startPrompt, storyVars(story, me, branch))`; push to `cfg.recent` (dedupe by id, newest first, 30) and save; `openLauncher`; `{ error }` → `say(error, cx, true)`; `{ ok, note }` → `note` flashed via `notify`-less `say` then `dismiss()` (the popup closes; a note is shown for 1.5 s with `cx.timer.after` before closing only when `note` is non-null). `s` from the list starts the highlighted story; `s` on the story screen starts `this.cur`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -626,7 +635,14 @@ test("start: several open PR branches ask which, and reuse it as existing", asyn
   assert.deepEqual(state.overlays.at(-1).props, { folder: repo, machine: null, branch: "b", space: "s" });
 });
 ```
-(`open()` gains a `space` option that pushes the space into `state.spaces` with `active: true`; the view takes the selected space as `spaces().find((s) => s.active)`.)
+```js
+test("start: an invalid branch from the template is refused before any launcher", async () => {
+  const { v, cx } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 }, branchTemplate: "{mention}/..{slug}" }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11), "PUT /stories/1": (b) => S(1, "Alpha", b.workflow_state_id) } });
+  press(v, cx, "s"); await cx.settle();
+  assert.match(v.err, /is not a valid branch name/); assert.equal(state.overlays.length, 0);
+});
+```
+(The view takes the selected space as `spaces().find((s) => s.active)`.)
 
 - [ ] **Step 2: Run to verify they fail** — FAIL.
 - [ ] **Step 3: Implement `startStory`, `pickStateView`, the branch menu.**
@@ -642,7 +658,7 @@ test("start: several open PR branches ask which, and reuse it as existing", asyn
 - Test: `test/ui.test.mjs`
 
 **Interfaces:**
-- Produces: `create(cx)` (screen `create`, `this.form = { name, desc, group, state, type, epic, iteration, mine, priority }` with `InputState`s for name and description and chip rows for the rest, defaults per spec section 6: group = my first group, state = that group's workflow's first `unstarted` state (fallback: the first workflow's), type `feature`, `mine: true`); `submit(cx)` → `createStory({ name, description, group_id, workflow_state_id, story_type, owner_ids: mine ? [me] : [], epic_id?, iteration_id?, custom_fields? })` then `openStory(created)` with the flash `Created sc-<id>. Press s to start it.`; ctrl+Enter submits; Tab/Shift-Tab via `nextCommand` move between name and description; `n` opens it from the list and the story screen.
+- Produces: `create(cx)` (screen `create`, `this.form = { name, desc, group, state, type, epic, iteration, mine, priority }` with `this.title` and `this.desc` (`InputState`s) and chip rows for the rest, defaults per spec section 6: group = my first group, state = that group's workflow's first `unstarted` state (fallback: the first workflow's), type `feature`, `mine: true`); `submit(cx)` → `createStory({ name, description, group_id, workflow_state_id, story_type, owner_ids: mine ? [me] : [], epic_id?, iteration_id?, custom_fields? })` then `openStory(created)` with the flash `Created sc-<id>. Press s to start it.`; ctrl+Enter submits; Tab/Shift-Tab via `nextCommand` move between name and description; `n` opens it from the list and the story screen.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -731,7 +747,7 @@ test("settings: branch template preview and priority field", async () => {
 
 - [ ] **Step 3: Live verification, read-only first.** Open a story, change tabs, filter by `sc-<id>`. Expected: data matches the web UI.
 
-- [ ] **Step 4: Live verification of Start, on a story the person names.** Ask the person for a throwaway story id before any write. With launcher `Mod: projects` and that story: press `s`. Expected: in the web UI the state is the configured start state, the person is an owner, the iteration is set when one fit; the projects launch screen shows the branch and prompt; Enter makes the worktree and space and the agent receives the prompt. Then with launcher `Shipped worktree dialog`, from a space in the repo: `s` on the same story. Expected: a note that nothing changed on Shortcut (state kept, already owner), the worktree dialog opens on the branch, a shell opens in the new worktree.
+- [ ] **Step 4: Live verification of Start, on a story the person names.** Ask the person for a throwaway story id before any write. With launcher `Mod: projects` and that story: press `s`. Expected: in the web UI the state is the configured start state, the person is an owner, the iteration is set when one fit; the popup closes and the projects launch screen stays open (if closing the popup also closes the dialog, keep the popup open instead and add `launch.opener`, the popup's overlay id, to the contract so the launcher closes it on success; record that in the spec); it shows the branch and prompt; Enter makes the worktree and space and the agent receives the prompt. Then with launcher `Shipped worktree dialog`, from a space in the repo: `s` on the same story. Expected: a note that nothing changed on Shortcut (state kept, already owner), the worktree dialog opens on the branch, a shell opens in the new worktree.
 
 - [ ] **Step 5: Ledger.** Add to `~/.config/herdr-app/CUSTOMIZATIONS.md`: the `shortcut` mod (source repo, version, keys added, data files), dated 2026-11-04.
 
