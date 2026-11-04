@@ -97,7 +97,7 @@ Story fields the mod reads: `id`, `name`, `description`, `story_type`, `workflow
 {
   "auth": { "env": "SHORTCUT_API_TOKEN" },          // or { "token": "…" }; env is the default
   "startPrompt": "Read the shortcut story {id} for context, then suggest how to proceed.",
-  "branchTemplate": "{mention}/sc-{id}/{slug}",
+  "branchTemplate": "{mention}/sc-{number}/{slug}",
   "startStates": { "500000011": 500000013 },        // workflow id → state id
   "iteration": "current-if-unset",                   // or "never"
   "priorityField": null,                             // custom field id, or null for none
@@ -230,6 +230,7 @@ Tests in `herdr-projects/test`: launch request parsing, project resolution by fo
 - 429: wait for `Retry-After` once, then show the error. The mod never retries in a loop.
 - A story in a workflow whose configured start state no longer exists: treat as unconfigured (pickState) and drop the stale entry.
 - Archived story: shown greyed in Recent, start refuses. Done story: start refuses (section 8.1).
+- Archived story: start refuses with "sc-1234 is archived."
 - `startPrompt` empty: no prompt is passed; the launcher starts its agent bare or not at all.
 - `branchTemplate` producing an invalid ref (checked with `git check-ref-format --branch` via `exec`): start refuses and points at settings.
 - Empty `repo` hints are the common case: an unstarted story has no branches or PRs. The projects launcher then shows its list with the banner, and the shipped path uses the selected space. No team/epic/label-to-project mapping in v1 (see follow-ups).
@@ -255,7 +256,7 @@ Tests in `herdr-projects/test`: launch request parsing, project resolution by fo
 - Repo and file layout mirror herdr-projects; look and icons are ported from herdr-linear under its MIT license.
 - Default global key `cmd-alt-s`.
 - Default token source is the `SHORTCUT_API_TOKEN` environment variable (it exists in your shell today); a pasted token is stored in `data/shortcut.json` with mode 0600.
-- Default branch template `{mention}/sc-{id}/{slug}` since this workspace returns no `formatted_vcs_branch_name`.
+- Default branch template `{mention}/sc-{number}/{slug}` (`{id}` already reads `sc-1234`) since this workspace returns no `formatted_vcs_branch_name`.
 - Start never moves a story backwards: the state changes only from backlog/unstarted states, and done stories are refused (your decision).
 - On resume, an open PR's branch wins over a story branch, which wins over the template; several candidates ask (your decision).
 - Iteration is set only when exactly one started iteration fits the story's team; otherwise it is left alone and said so.
