@@ -85,9 +85,11 @@ Kept in `~/.config/herdr-app/data/shortcut.json`. A missing or broken file gives
    - The start state, only from a backlog or unstarted state, and only when it comes after the story's state in the workflow (never backwards). Otherwise the story keeps its state ("state kept: ‹name›").
    - You appended to the owners, if you are not there yet. Nobody is ever removed.
    - The iteration, per the setting.
-4. Nothing to change means no request. A rejected update is shown, and nothing is launched.
-5. The branch: an open PR's branch, else a story branch (`checkout: "existing"`), else the template (`"new"`). Several at the same level are asked about.
-6. The story goes to Recent, the launcher opens, and the popup closes. Any notes are shown for 1.5 s first.
+4. A branch from the template is checked (`git check-ref-format --branch`) before anything is written: an invalid one refuses the start and points at settings, with the ticket untouched.
+5. Nothing to change means no request. A rejected update is shown, and nothing is launched.
+6. The branch: an open PR's branch, else a story branch (`checkout: "existing"`), else the template (`"new"`). Several at the same level are asked about.
+7. The story goes to Recent (best effort: a failed save adds the note "recent not saved" and the start goes on), the launcher opens, and the popup closes. Any notes are shown for 1.5 s first.
+8. Anything that stops the start after the update (Esc on the branch menu, a launcher error) starts with "sc-1234 was updated in Shortcut; ": press `s` again to resume (the state is kept and the branch reused).
 
 ## Install
 

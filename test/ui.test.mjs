@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { open, press, texts } from "./helpers/view.mjs";
 import { state, reset, pushCommand } from "./helpers/herdr-stub.mjs";
 import { WF, S, basic } from "./helpers/fixtures.mjs";
-import { mkdirSync, writeFileSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, statSync, rmSync } from "node:fs";
 import { makeRepo, sh } from "./helpers/repo.mjs";
 const { readCache, writeCache } = await import("../mods/shortcut/api.js");
 const { dataPath } = await import("../mods/shortcut/config.js");
@@ -264,10 +264,11 @@ test("start: several open PR branches ask which, and reuse it as existing", asyn
   assert.equal(v.menu.kind, "branch"); press(v, cx, "down"); press(v, cx, "enter"); await cx.settle();
   assert.deepEqual(state.overlays.at(-1).props, { folder: repo, machine: null, branch: "b", space: "s" });
 });
-test("start: an invalid branch from the template is refused before any launcher", async () => {
-  const { v, cx } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 }, branchTemplate: "{mention}/..{slug}" }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11), "PUT /stories/1": (b) => S(1, "Alpha", b.workflow_state_id) }, space: ready() });
+test("start: an invalid branch from the template is refused before the ticket is touched", async () => {
+  const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 }, branchTemplate: "{mention}/..{slug}" }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11), "PUT /stories/1": (b) => S(1, "Alpha", b.workflow_state_id) }, space: ready() });
   press(v, cx, "s"); await cx.settle();
-  assert.match(v.err, /is not a valid branch name/); assert.equal(state.overlays.length, 0);
+  assert.match(v.err, /^"jer\/\.\.alpha" is not a valid branch name: check the branch template in settings$/); assert.equal(state.overlays.length, 0);
+  assert.equal(fetch.calls.filter((c) => c.method === "PUT").length, 0);
 });
 test("start: Esc on the branch menu cancels with nothing written and no launcher", async () => {
   const prs = [{ branch_name: "a", merged: false, closed: false }, { branch_name: "b", merged: false, closed: false }];
@@ -276,9 +277,30 @@ test("start: Esc on the branch menu cancels with nothing written and no launcher
   assert.equal(v.menu.kind, "branch");
   const puts = fetch.calls.filter((c) => c.method === "PUT").length;
   pushCommand("escape"); await cx.settle();
-  assert.equal(v.menu, null); assert.equal(v.flash, "Start cancelled"); assert.equal(v.busy, "");
+  // The update is already in Shortcut (s again resumes): the message says so.
+  assert.equal(v.menu, null); assert.match(v.err, /^sc-1 was updated in Shortcut; Start cancelled$/); assert.equal(v.busy, "");
   assert.equal(fetch.calls.filter((c) => c.method === "PUT").length, puts); assert.equal(state.overlays.length, 0); assert.equal(state.closed, 0);
   assert.equal(JSON.parse(readFileSync(dataPath(), "utf8")).recent, undefined);
+});
+test("start: a launcher error after the update says the ticket was updated", async () => {
+  const main = () => `${state.appHome}/mods/projects/main.js`;
+  // The mod is there when readiness checks it, and gone by the hand-off.
+  const routes = { ...basic(), "GET /stories/1": S(1, "Alpha", 11), "PUT /stories/1": (b) => { rmSync(main()); return S(1, "Alpha", b.workflow_state_id); } };
+  const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 }, launcher: { kind: "mod", name: "projects" } }, routes });
+  installProjects();
+  press(v, cx, "s"); await cx.settle();
+  assert.equal(fetch.calls.filter((c) => c.method === "PUT").length, 1);
+  assert.equal(v.err, 'sc-1 was updated in Shortcut; launcher "projects" is not installed'); assert.equal(state.overlays.length, 0); assert.equal(state.closed, 0);
+});
+test("start: a recent that cannot be saved does not stop the launch", async () => {
+  // Another writer changes the settings file while the start runs: the compare-and-write of recent fails.
+  const routes = { ...basic(), "GET /stories/1": S(1, "Alpha", 11), "PUT /stories/1": (b) => { writeFileSync(dataPath(), "{}\n"); return S(1, "Alpha", b.workflow_state_id); } };
+  const { v, cx } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 }, iteration: "never", launcher: { kind: "mod", name: "projects" } }, routes });
+  installProjects();
+  press(v, cx, "s"); await cx.settle();
+  assert.equal(state.overlays.at(-1).mod, "projects"); assert.equal(v.err, "");
+  assert.match(v.flash, /recent not saved/);
+  cx.fire(1500); assert.equal(state.closed, 1);
 });
 test("start: the notes are shown for 1.5 s before the popup closes", async () => {
   const { v, cx } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 }, iteration: "never", launcher: { kind: "mod", name: "projects" } }, routes: { ...basic(), "GET /stories/2": S(2, "Beta", 12) } });

@@ -81,6 +81,7 @@ export default class Shortcut extends View {
     this.saveSeq = 0; // the settings' debounced save: only the last one scheduled runs
     this.pick = null; // a start waiting on pickState: { story, workflow, resume, from }
     this.branching = null; // a start waiting on the branch menu: { story, resume }
+    this.afterPut = null; // the story id a start has already updated in Shortcut (what it says after that names it)
     this.prAt = -1; // the story screen's highlighted pull request (-1: none)
     this.github = false; // the github mod is installed: a story's pull requests open there
     this.typing = false;
@@ -635,6 +636,7 @@ export default class Shortcut extends View {
 
   startStory(story, cx) {
     if (!story || !this.client || this.busy || this.pick || this.branching) return;
+    this.afterPut = null;
     this.startTask(story.id, cx, async (cx) => {
       const fresh = await this.client.story(story.id);
       // The launcher must be able to take it before the ticket is touched (spec 7: the finder's work happens first,
@@ -659,10 +661,22 @@ export default class Shortcut extends View {
         this.busy = "";
       } catch (e) {
         this.busy = "";
-        this.say(String(e?.message ?? e), cx, true);
+        this.sayStart(String(e?.message ?? e), cx);
       }
       cx.notify();
     });
+  }
+
+  // An error in a start: once the ticket was updated, it says so (pressing s again resumes the start).
+  sayStart(text, cx) {
+    const pre = this.afterPut != null ? `sc-${this.afterPut} was updated in Shortcut; ` : "";
+    this.say(pre + text, cx, true);
+  }
+
+  // The branch name's check (spec 10): an invalid one refuses the start and points at settings.
+  async badBranch(branch) {
+    const ok = await exec("git", ["check-ref-format", "--branch", branch]);
+    return ok.code === 0 ? null : `"${branch}" is not a valid branch name: check the branch template in settings`;
   }
 
   // Steps 3 to 5: refused, ask for the workflow's start state, or update the story; then the branch.
@@ -678,6 +692,14 @@ export default class Shortcut extends View {
       }
       return this.askStartState(story, workflow, cx);
     }
+    // The template's branch is checked before the ticket is touched; a PR's or story's (from Shortcut) at launch.
+    const bc = branchCandidates(story, this.cfg, storyVars(story, this.me));
+    let checked = null;
+    if (bc.level === "template") {
+      const bad = await this.badBranch(bc.candidates[0]);
+      if (bad) return this.say(bad, cx, true);
+      checked = bc.candidates[0];
+    }
     if (d.patch) {
       try {
         story = await this.client.updateStory(story.id, d.patch);
@@ -685,10 +707,11 @@ export default class Shortcut extends View {
         if (e instanceof ApiError) return this.say(e.message, cx, true);
         throw e;
       }
+      this.afterPut = story.id;
       this.replaceStory(story);
       await this.keep();
     }
-    return this.chooseBranch(story, d.notes, cx);
+    return this.chooseBranch(story, d.notes, cx, checked);
   }
 
   // pickState: the workflow's unstarted and started states, the first started one highlighted; the one chosen is kept
@@ -711,22 +734,25 @@ export default class Shortcut extends View {
   }
 
   // Step 6: one candidate goes straight on; several are asked about in the branch menu.
-  chooseBranch(story, notes, cx) {
+  chooseBranch(story, notes, cx, checked = null) {
     const { candidates, checkout } = branchCandidates(story, this.cfg, storyVars(story, this.me));
-    if (candidates.length === 1) return this.launch(story, candidates[0], checkout, notes, cx);
+    if (candidates.length === 1) return this.launch(story, candidates[0], checkout, notes, cx, checked);
     this.branching = { story, resume: (branch, cx) => this.startTask(story.id, cx, (cx) => this.launch(story, branch, checkout, notes, cx)) };
     this.menu = { kind: "branch", items: candidates.map((c) => ({ label: c, value: c })), at: 0 };
     this.focus.focus?.();
     cx.notify();
   }
 
-  // Steps 6 (the prompt) to 8: a valid branch, recent, the launcher, then the popup closes.
-  async launch(story, branch, checkout, notes, cx) {
-    const ok = await exec("git", ["check-ref-format", "--branch", branch]);
-    if (ok.code !== 0) return this.say(`"${branch}" is not a valid branch name: check the branch template in settings`, cx, true);
+  // Steps 6 (the prompt) to 8: a valid branch, recent, the launcher, then the popup closes. `checked`: a branch
+  // already found valid (the template's, before the update).
+  async launch(story, branch, checkout, notes, cx, checked = null) {
+    if (branch !== checked) {
+      const bad = await this.badBranch(branch);
+      if (bad) return this.sayStart(bad, cx);
+    }
     const prompt = expand(this.cfg.startPrompt, storyVars(story, this.me, branch));
-    this.cfg.recent = [{ id: story.id, at: new Date().toISOString() }, ...(this.cfg.recent ?? []).filter((r) => r.id !== story.id)].slice(0, 30);
-    this.raw = await saveSettings(this.cfg, this.raw);
+    notes = [...notes];
+    if (!(await this.saveRecent(story.id))) notes.push("recent not saved");
     const r = await openLauncher({
       cfg: this.cfg,
       launch: buildLaunchRequest({ story, branch, checkout, prompt, hints: repoHints(story) }),
@@ -735,7 +761,7 @@ export default class Shortcut extends View {
       panes: panes(),
       exec, openOverlay, readTextFile,
     });
-    if (r.error) return this.say(r.error, cx, true);
+    if (r.error) return this.sayStart(r.error, cx);
     // Anything said (the start's notes, the launcher's note) is shown for 1.5 s before the popup closes.
     const said = [...notes, r.note].filter(Boolean).join(" · ");
     if (!said) return this.dismiss();
@@ -743,11 +769,29 @@ export default class Shortcut extends View {
     this.cx.timer.after(1500, () => this.dismiss());
   }
 
+  // Recent (best effort, in the settings' save chain so it cannot race a debounced save): false when not saved.
+  async saveRecent(id) {
+    this.cfg.recent = [{ id, at: new Date().toISOString() }, ...(this.cfg.recent ?? []).filter((r) => r.id !== id)].slice(0, 30);
+    const p = (this.saving ?? Promise.resolve()).then(async () => {
+      this.raw = await saveSettings(this.cfg, this.raw);
+    });
+    this.saving = p.catch(() => {});
+    try {
+      await p;
+      return true;
+    } catch {
+      // The error is not logged: a settings write can carry the file's text, and the file may hold the token.
+      console.error("[shortcut] start: recent was not saved");
+      return false;
+    }
+  }
+
   // Esc on pickState or the branch menu: the start stops there, nothing more is written.
   cancelStart(cx) {
     if (this.pick) this.screen = this.pick.from;
     this.menu = this.pick = this.branching = null;
-    this.say("Start cancelled", cx);
+    if (this.afterPut != null) this.sayStart("Start cancelled", cx);
+    else this.say("Start cancelled", cx);
   }
 
   // ── actions (the screens they lead to come in later tasks) ─────────────
