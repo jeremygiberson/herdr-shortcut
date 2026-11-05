@@ -284,6 +284,29 @@ test("start: several open PR branches ask which, and reuse it as existing", asyn
   assert.equal(v.menu.kind, "branch"); press(v, cx, "down"); press(v, cx, "enter"); await cx.settle();
   assert.deepEqual(state.overlays.at(-1).props, { folder: repo, machine: null, branch: "b", space: "s" });
 });
+test("start: one existing branch still asks, with a new branch from the template as the marked last option", async () => {
+  const prs = [{ branch_name: "a", merged: false, closed: false, url: "https://github.com/o/api/pull/1" }];
+  const repo = makeRepo();
+  const { v, cx } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 } }, routes: { ...basic(), "GET /stories/2": { ...S(2, "Beta", 12), pull_requests: prs } }, space: { id: "s", folder: repo, tabs: [] } });
+  v.at = v.shownRows().findIndex((r) => r.story?.id === 2); press(v, cx, "s"); await cx.settle();
+  assert.equal(v.menu.kind, "branch"); assert.equal(v.menu.at, 0);
+  assert.deepEqual(v.menu.items.map((i) => [i.value, i.checkout, i.fresh]), [["a", "existing", false], ["jer/sc-2/beta", "new", true]]);
+  assert.match(texts(v), /New branch/);
+  press(v, cx, "down"); press(v, cx, "enter"); await cx.settle();
+  assert.equal(v.err, ""); assert.deepEqual(state.overlays.at(-1).props, { folder: repo, machine: null, branch: "jer/sc-2/beta", space: "s" });
+});
+test("start: the new-branch option hands checkout \"new\" to a launcher mod, an existing one \"existing\"", async () => {
+  const prs = [{ branch_name: "a", merged: false, closed: false, url: "https://github.com/o/api/pull/1" }];
+  const routes = { ...basic(), "GET /stories/2": { ...S(2, "Beta", 12), pull_requests: prs } };
+  const a = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 }, launcher: { kind: "mod", name: "projects" } }, routes });
+  installProjects(); a.v.at = a.v.shownRows().findIndex((r) => r.story?.id === 2); press(a.v, a.cx, "s"); await a.cx.settle();
+  press(a.v, a.cx, "enter"); await a.cx.settle();
+  assert.equal(state.overlays.at(-1).props.launch.checkout, "existing"); assert.equal(state.overlays.at(-1).props.launch.branch, "a");
+  const b = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 }, launcher: { kind: "mod", name: "projects" } }, routes });
+  installProjects(); b.v.at = b.v.shownRows().findIndex((r) => r.story?.id === 2); press(b.v, b.cx, "s"); await b.cx.settle();
+  press(b.v, b.cx, "down"); press(b.v, b.cx, "enter"); await b.cx.settle();
+  assert.equal(state.overlays.at(-1).props.launch.checkout, "new"); assert.equal(state.overlays.at(-1).props.launch.branch, "jer/sc-2/beta");
+});
 test("start: an invalid branch from the template is refused before the ticket is touched", async () => {
   const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 }, branchTemplate: "{mention}/..{slug}" }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11), "PUT /stories/1": (b) => S(1, "Alpha", b.workflow_state_id) }, space: ready() });
   press(v, cx, "s"); await cx.settle();

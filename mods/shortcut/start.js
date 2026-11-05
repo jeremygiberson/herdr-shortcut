@@ -56,6 +56,17 @@ export function branchCandidates(story, cfg, vars) {
   return { level: "template", candidates: [expand(cfg.branchTemplate, vars)], checkout: "new" };
 }
 
+/** What the branch menu offers: every existing candidate (open PR branches, else story branches), then the template's
+ *  branch as a new one, marked `fresh`, unless an existing candidate already has that name. */
+export function branchOptions(story, cfg, vars) {
+  const bc = branchCandidates(story, cfg, vars);
+  const options = bc.candidates.map((branch) => ({ branch, checkout: bc.checkout, fresh: bc.level === "template" }));
+  if (bc.level === "template") return options;
+  const fresh = expand(cfg.branchTemplate, vars);
+  if (!bc.candidates.includes(fresh)) options.push({ branch: fresh, checkout: "new", fresh: true });
+  return options;
+}
+
 // Repo names and urls implied by the story's branch and PR urls.
 export function repoHints(story) {
   const raw = [...(story.branches || []), ...(story.pull_requests || [])].map((x) => x.url).filter(Boolean);

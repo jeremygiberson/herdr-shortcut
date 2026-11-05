@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { WF } from "./helpers/fixtures.mjs";
 const { normalize, storyVars } = await import("../mods/shortcut/config.js");
-const { startDecision, currentIteration, branchCandidates, repoHints } = await import("../mods/shortcut/start.js");
+const { startDecision, currentIteration, branchCandidates, branchOptions, repoHints } = await import("../mods/shortcut/start.js");
 
 const cfg = (o = {}) => normalize({ startStates: { 1: 12 }, ...o });
 const me = { id: "me" };
@@ -57,6 +57,16 @@ test("branchCandidates: open PR, then story branch, then template", () => {
   assert.deepEqual(branchCandidates(story({ pull_requests: [{ branch_name: "p1", merged: false, closed: false }, { branch_name: "p2", merged: true, closed: true }], branches: [{ name: "b1" }] }), cfg(), vars), { level: "pr", candidates: ["p1"], checkout: "existing" });
   assert.deepEqual(branchCandidates(story({ branches: [{ name: "b1" }, { name: "b1" }, { name: "b2" }] }), cfg(), vars), { level: "story", candidates: ["b1", "b2"], checkout: "existing" });
   assert.deepEqual(branchCandidates(story(), cfg(), vars), { level: "template", candidates: ["jer/sc-7/x"], checkout: "new" });
+});
+test("branchOptions: existing branches first, then the template as a marked new branch; only the template when there are none", () => {
+  const vars = { mention: "jer", number: 7, slug: "x" };
+  assert.deepEqual(branchOptions(story({ pull_requests: [{ branch_name: "p1", merged: false, closed: false }], branches: [{ name: "b1" }] }), cfg(), vars),
+    [{ branch: "p1", checkout: "existing", fresh: false }, { branch: "jer/sc-7/x", checkout: "new", fresh: true }]);
+  assert.deepEqual(branchOptions(story({ branches: [{ name: "b1" }, { name: "b2" }] }), cfg(), vars),
+    [{ branch: "b1", checkout: "existing", fresh: false }, { branch: "b2", checkout: "existing", fresh: false }, { branch: "jer/sc-7/x", checkout: "new", fresh: true }]);
+  assert.deepEqual(branchOptions(story(), cfg(), vars), [{ branch: "jer/sc-7/x", checkout: "new", fresh: true }]);
+  // A story branch that already matches the template is not offered twice.
+  assert.deepEqual(branchOptions(story({ branches: [{ name: "jer/sc-7/x" }] }), cfg(), vars), [{ branch: "jer/sc-7/x", checkout: "existing", fresh: false }]);
 });
 test("repoHints from branch and PR urls", () => {
   assert.deepEqual(repoHints(story({ branches: [{ url: "https://github.com/org/api/tree/b1" }], pull_requests: [{ url: "https://github.com/org/api/pull/3" }, { url: "https://github.com/org/web.git/pull/1" }] })), { names: ["api", "web"], urls: ["https://github.com/org/api", "https://github.com/org/web.git"], folder: null });

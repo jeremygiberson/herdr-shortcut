@@ -7,7 +7,7 @@ import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, Scrollbar, 
 import { theme, props, closeOverlay, openOverlay, nextCommand, appHome, readTextFile, spaces, panes, exec } from "herdr";
 import { load as loadSettings, save as saveSettings, resolveToken, normalize, storyVars, expand, DEFAULTS, ENV_NAME } from "./config.js";
 import { createClient, ApiError, readCache, writeCache, fresh } from "./api.js";
-import { startDecision, branchCandidates, repoHints } from "./start.js";
+import { startDecision, branchCandidates, branchOptions, repoHints } from "./start.js";
 import { buildLaunchRequest, backTo, launcherReady, openLauncher } from "./launch.js";
 import { tones, tint, icon, chip, key, countPill, stateIcon, stateColor, MONO } from "./look.js";
 
@@ -562,7 +562,7 @@ export default class Shortcut extends View {
     } else if (m?.kind === "branch" && item && this.branching) {
       const b = this.branching;
       this.branching = null;
-      b.resume(item.value, cx);
+      b.resume(item.value, item.checkout, cx);
     } else if (m?.kind === "startState" && item) {
       if (item.value == null) delete this.cfg.startStates[String(m.wf)];
       else this.cfg.startStates[String(m.wf)] = item.value;
@@ -744,12 +744,13 @@ export default class Shortcut extends View {
     cx.notify();
   }
 
-  // Step 6: one candidate goes straight on; several are asked about in the branch menu.
+  // Step 6: only the template's branch goes straight on; any existing branch is asked about in the branch menu,
+  // which always ends with a new branch from the template, so resuming never forces an old branch.
   chooseBranch(story, notes, cx, checked = null) {
-    const { candidates, checkout } = branchCandidates(story, this.cfg, storyVars(story, this.me));
-    if (candidates.length === 1) return this.launch(story, candidates[0], checkout, notes, cx, checked);
-    this.branching = { story, resume: (branch, cx) => this.startTask(story.id, cx, (cx) => this.launch(story, branch, checkout, notes, cx)) };
-    this.menu = { kind: "branch", items: candidates.map((c) => ({ label: c, value: c })), at: 0 };
+    const options = branchOptions(story, this.cfg, storyVars(story, this.me));
+    if (options.length === 1) return this.launch(story, options[0].branch, options[0].checkout, notes, cx, checked);
+    this.branching = { story, resume: (branch, checkout, cx) => this.startTask(story.id, cx, (cx) => this.launch(story, branch, checkout, notes, cx)) };
+    this.menu = { kind: "branch", items: options.map((o) => ({ label: o.fresh ? `New branch · ${o.branch}` : o.branch, value: o.branch, checkout: o.checkout, fresh: o.fresh })), at: 0 };
     this.focus.focus?.();
     cx.notify();
   }
@@ -1603,14 +1604,17 @@ export default class Shortcut extends View {
     }[m.kind] ?? "";
     return v_flex().flex_none().gap(2).p(10).rounded(10).border_1().border_color(o.line).bg(o.raised).shadow_md()
       .when(Boolean(title), (el) => el.child(div().px(6).pb(6).text_size(13).font_semibold().text_color(o.fg).child(title)))
-      .children(m.items.map((it, i) => {
+      .children(m.items.flatMap((it, i) => {
         const on = i === m.at;
-        return h_flex().id(`mi-${i}`).h(30).px(8).gap(10).items_center().rounded(6).cursor_pointer()
+        // A new-branch option (the branch menu's last) stands apart: a rule above it, a plus, the accent colour.
+        const row = h_flex().id(`mi-${i}`).h(30).px(8).gap(10).items_center().rounded(6).cursor_pointer()
           .when(on, (el) => el.bg(tint(o.accent, 0.18)))
           .when(!on, (el) => el.hover((s) => s.bg(o.sunk)))
           .on_click(this.guard("menu", (_e, cx) => this.choose(it, cx)))
           .child(div().flex_none().w(14).font_family(MONO).text_size(11.5).text_color(o.dim).child(String(i + 1)))
-          .child(div().text_size(13).when(on, (el) => el.font_medium()).text_color(on ? o.fg : o.muted).child(it.label));
+          .when(Boolean(it.fresh), (el) => el.child(icon("plus", o.accent, 13)))
+          .child(div().text_size(13).when(on || it.fresh, (el) => el.font_medium()).text_color(it.fresh ? o.accent : on ? o.fg : o.muted).child(it.label));
+        return it.fresh && i > 0 ? [div().flex_none().h(1).mx(8).my(4).bg(o.line), row] : [row];
       }));
   }
 
