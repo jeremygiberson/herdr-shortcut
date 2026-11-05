@@ -29,7 +29,7 @@ export async function open({ cfg = {}, routes = {}, props = {}, space = null, se
     open_url: (url) => cx.opened.push(url),
     write_to_clipboard: (text) => cx.clipboard.push(text),
     settle: async () => { for (let i = 0; i < 6; i++) { await Promise.all(pending.splice(0)); await new Promise((r) => setImmediate(r)); } },
-    fire: (ms) => { for (const t of cx.timers.filter((x) => x.ms === ms)) t.fn(); },
+    fire: (ms) => { const due = cx.timers.filter((x) => x.ms === ms); cx.timers = cx.timers.filter((x) => x.ms !== ms); for (const t of due) t.fn(); },
   };
   const v = new Shortcut();
   v.init({}, cx);

@@ -1,2 +1,4 @@
 node_modules
 .superpowers/
+mods/*/gpui-kit.d.ts
+mods/*/herdr.d.ts
