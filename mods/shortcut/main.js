@@ -3,7 +3,7 @@
 // with its binary layer replaced by the Shortcut API client.
 
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import { theme, props, closeOverlay, openOverlay, nextCommand, appHome, readTextFile, spaces, panes, exec } from "herdr";
 import { load as loadSettings, save as saveSettings, resolveToken, normalize, storyVars, expand, DEFAULTS } from "./config.js";
 import { createClient, ApiError, readCache, writeCache, fresh } from "./api.js";
@@ -113,6 +113,7 @@ export default class Shortcut extends View {
           const c = await nextCommand();
           if (c === "escape") this.escape(cx);
           else if ((c === "tab" || c === "backtab") && this.screen === "list") this.step(c === "tab" ? 1 : -1, cx);
+          else if ((c === "tab" || c === "backtab") && this.screen === "create") this.nextField(cx);
           cx.notify();
         } catch (e) {
           this.fail("command", e);
@@ -734,7 +735,113 @@ export default class Shortcut extends View {
 
   // ── actions (the screens they lead to come in later tasks) ─────────────
 
-  create(_cx) {}
+  // ── a new story ────────────────────────────────────────────────────────
+  // A name and description, then chips for the team, state, type, epic, iteration, owner and (when configured)
+  // priority. Ctrl+Enter creates it and opens it; Esc goes back to the screen it came from.
+
+  create(cx) {
+    if (!this.client || !this.me) return;
+    const groups = this.ref.groups?.data ?? [];
+    const group = this.myGroups()[0] ?? groups[0] ?? null;
+    this.from = this.screen === "story" ? "story" : "list";
+    this.form = { name: "", desc: "", group, state: this.firstState(group), type: "feature", epic: null, iteration: null, mine: true, priority: null };
+    this.screen = "create";
+    this.menu = null;
+    this.err = this.flash = "";
+    this.title = InputState.new({ placeholder: "Story name" });
+    this.desc = TextareaState.new({ placeholder: "Description (optional)", rows: 4 });
+    this.onDesc = false;
+    this.title.on("submit", () => {
+      this.onDesc = true;
+      this.desc.focus();
+    });
+    this.title.focus();
+    cx.notify();
+  }
+
+  // The workflow a team's stories go in: its first, else the first there is.
+  workflowFor(group) {
+    const all = this.ref.workflows?.data ?? [];
+    return all.find((w) => w.id === group?.workflow_ids?.[0]) ?? all[0] ?? null;
+  }
+
+  // The state a new story starts in: the workflow's first unstarted one (by position), else its first.
+  firstState(group) {
+    const states = [...(this.workflowFor(group)?.states ?? [])].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    return (states.find((s) => s.type === "unstarted") ?? states[0])?.id ?? null;
+  }
+
+  pickTeam(group, cx) {
+    const f = this.form;
+    f.group = group;
+    f.state = this.firstState(group);
+    // An iteration belongs to teams; the one chosen may not be this team's.
+    if (f.iteration != null && !this.iterationsFor(group).some((i) => i.id === f.iteration)) f.iteration = null;
+    cx.notify();
+  }
+
+  iterationsFor(group) {
+    return (this.ref.iterations?.data ?? []).filter((i) => (i.status === "started" || i.status === "unstarted")
+      && (!i.group_ids?.length || !group || i.group_ids.includes(group.id)));
+  }
+
+  // Tab and Shift-Tab: between the name and the description.
+  nextField(cx) {
+    this.onDesc = !this.onDesc;
+    (this.onDesc ? this.desc : this.title).focus();
+    cx.notify();
+  }
+
+  submit(cx) {
+    const f = this.form;
+    if (!f || this.busy || !this.client) return;
+    const name = this.title.value().trim();
+    if (!name) return this.say("A name is required", cx, true);
+    const params = {
+      name,
+      description: this.desc.value(),
+      story_type: f.type,
+      owner_ids: f.mine ? [this.me.id] : [],
+    };
+    if (f.group) params.group_id = f.group.id;
+    if (f.state != null) params.workflow_state_id = f.state;
+    if (f.epic != null) params.epic_id = f.epic;
+    if (f.iteration != null) params.iteration_id = f.iteration;
+    if (this.cfg.priorityField && f.priority != null) params.custom_fields = [{ field_id: this.cfg.priorityField, value_id: f.priority }];
+    this.err = this.flash = "";
+    this.busy = "Creating…";
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const created = await this.client.createStory(params);
+        this.busy = "";
+        const mine = this.lists.mine;
+        if (f.mine && mine?.data) mine.data = [created, ...mine.data.filter((x) => x.id !== created.id)];
+        this.openStory(created, cx);
+        this.flash = `Created sc-${created.id}. Press s to start it.`;
+      } catch (e) {
+        this.busy = "";
+        if (!(e instanceof ApiError)) return this.fail("create", e);
+        this.say(e.message, cx, true);
+      }
+      cx.notify();
+    });
+  }
+
+  createKey(k, cx) {
+    if (k === "ctrl-enter") this.submit(cx);
+    else if (k === "tab" || k === "shift-tab") this.nextField(cx);
+    else return false;
+    return true;
+  }
+
+  // Esc: to the list or the story it was opened from.
+  leaveCreate(cx) {
+    this.screen = this.from === "story" && this.cur ? "story" : "list";
+    this.err = this.flash = "";
+    this.focus.focus?.();
+    cx.notify();
+  }
 
   openSettings(_cx) {}
 
@@ -762,6 +869,7 @@ export default class Shortcut extends View {
       return cx.notify();
     }
     if (this.screen === "story") return this.back(cx);
+    if (this.screen === "create") return this.leaveCreate(cx);
     if (this.screen === "list" && this.drilled) {
       this.drilled = null;
       this.at = 0;
@@ -794,6 +902,7 @@ export default class Shortcut extends View {
     else if (this.screen === "list") handled = this.listKey(k, cx);
     else if (this.screen === "story") handled = this.storyKey(k, cx);
     else if (this.screen === "signIn") handled = this.signInKey(k, cx);
+    else if (this.screen === "create") handled = this.createKey(k, cx);
     else handled = false;
     if (!handled) return;
     cx.stop_propagation();
@@ -1015,6 +1124,9 @@ export default class Shortcut extends View {
         k(["esc"], "back", (cx) => this.escape(cx), "f-esc"),
       ];
     }
+    if (this.screen === "create") {
+      return [k(["ctrl", "enter"], "create", (cx) => this.submit(cx), "f-go"), k(["tab"], "next field", (cx) => this.nextField(cx), "f-tab"), k(["esc"], "back", (cx) => this.escape(cx), "f-esc")];
+    }
     if (this.screen !== "list") return [k(["esc"], "back", (cx) => this.escape(cx), "f-esc")];
     const sel = () => this.selected();
     return [
@@ -1100,6 +1212,41 @@ export default class Shortcut extends View {
         .child(s.app_url ?? "")));
   }
 
+  // ── drawing: a new story ───────────────────────────────────────────────
+
+  // A row of chips for one field, the chosen one lit. items: [{ id, label }].
+  chipRow(o, label, id, items, isOn, onPick) {
+    return this.field(o, label, items.map((x) => chip(o, `${id}-${x.id}`, [x.label], {
+      color: isOn(x) ? o.accent : null,
+      click: this.guard(id, (cx) => {
+        onPick(x, cx);
+        cx.notify();
+      }),
+    })));
+  }
+
+  createView(o) {
+    const f = this.form;
+    const box = (el) => div().flex_none().px(12).py(8).rounded(8).border_1().border_color(o.line).bg(o.sunk).child(el);
+    const groups = (this.ref.groups?.data ?? []).filter((g) => !g.archived);
+    const states = [...(this.workflowFor(f.group)?.states ?? [])].filter((s) => s.type !== "done").sort(byPosition);
+    const epics = (this.ref.epics?.data ?? []).filter((e) => !e.archived && e.state !== "done");
+    const iterations = this.iterationsFor(f.group);
+    const prio = this.cfg.priorityField && (this.ref.customFields?.data ?? []).find((x) => x.id === this.cfg.priorityField);
+    const none = { id: "none", label: "None", value: null };
+    return v_flex().flex_none().gap(10)
+      .child(div().text_size(15).font_semibold().text_color(o.fg).child("New story"))
+      .child(box(Input.new(this.title).w_full().text_size(13).text_color(o.fg)))
+      .child(box(Textarea.new(this.desc).w_full().text_size(13).text_color(o.fg)))
+      .when(groups.length > 0, (el) => el.child(this.chipRow(o, "Team", "tm", groups.map((g) => ({ id: g.id, label: g.name, value: g })), (x) => x.value.id === f.group?.id, (x, cx) => this.pickTeam(x.value, cx))))
+      .when(states.length > 0, (el) => el.child(this.chipRow(o, "State", "st", states.map((s) => ({ id: s.id, label: s.name, value: s.id })), (x) => x.value === f.state, (x) => (f.state = x.value))))
+      .child(this.chipRow(o, "Type", "ty", ["feature", "bug", "chore"].map((t) => ({ id: t, label: t, value: t })), (x) => x.value === f.type, (x) => (f.type = x.value)))
+      .child(this.chipRow(o, "Epic", "ep", [none, ...epics.map((e) => ({ id: e.id, label: e.name, value: e.id }))], (x) => x.value === f.epic, (x) => (f.epic = x.value)))
+      .child(this.chipRow(o, "Iteration", "it", [none, ...iterations.map((i) => ({ id: i.id, label: i.name, value: i.id }))], (x) => x.value === f.iteration, (x) => (f.iteration = x.value)))
+      .child(this.chipRow(o, "Owner", "ow", [{ id: "me", label: "me", value: true }], (x) => f.mine === x.value, () => (f.mine = !f.mine)))
+      .when(Boolean(prio), (el) => el.child(this.chipRow(o, "Priority", "pr", [none, ...(prio.values ?? []).filter((x) => x.enabled !== false).sort(byPosition).map((x) => ({ id: x.id, label: x.value, value: x.id }))], (x) => x.value === f.priority, (x) => (f.priority = x.value))));
+  }
+
   menuView(o) {
     const m = this.menu;
     const title = {
@@ -1169,6 +1316,7 @@ export default class Shortcut extends View {
         .child(this.tabBar(t, o))
         .child(this.listView(o)))
       .when(scr === "story" && Boolean(this.cur), (el) => el.child(this.storyView(o)))
+      .when(scr === "create" && Boolean(this.form), (el) => el.child(this.createView(o)))
       .when(scr === "pickState" && Boolean(this.pick && this.menu), (el) => el.child(this.pickStateView(o)))
       .when(scr !== "pickState" && Boolean(this.menu), (el) => el.child(this.menuView(o)))
       .when(scr === "signIn", (el) => el.child(this.signInView(o)))

@@ -301,3 +301,18 @@ test("start: a workflow with no state but done is refused instead of an empty pi
   assert.notEqual(v.screen, "pickState"); assert.equal(v.menu, null);
   assert.equal(v.err, "Ops has no state to start in");
 });
+
+test("n opens the form with defaults, ctrl+Enter creates and opens the story", async () => {
+  const routes = { ...basic(), "GET /groups": [{ id: "g1", name: "Eng", member_ids: ["me"], archived: false, workflow_ids: [1] }], "POST /stories": (b) => ({ ...S(77, b.name, b.workflow_state_id), ...b }) };
+  const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" } }, routes });
+  press(v, cx, "n"); assert.equal(v.screen, "create");
+  v.title.set_value("New thing"); v.desc.set_value("Body");
+  press(v, cx, "enter", { control: true }); await cx.settle();
+  assert.deepEqual(fetch.calls.find((c) => c.method === "POST" && c.path === "/stories").body, { name: "New thing", description: "Body", group_id: "g1", workflow_state_id: 11, story_type: "feature", owner_ids: ["me"] });
+  assert.equal(v.screen, "story"); assert.equal(v.cur.id, 77); assert.match(texts(v), /Press s to start it/);
+});
+test("an empty name does not submit", async () => {
+  const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" } }, routes: basic() });
+  press(v, cx, "n"); press(v, cx, "enter", { control: true }); await cx.settle();
+  assert.equal(fetch.calls.some((c) => c.method === "POST" && c.path === "/stories"), false); assert.match(v.err, /name/i);
+});
