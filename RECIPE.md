@@ -13,7 +13,7 @@ A popup at the top of the window, 40px down, 80% wide and 80% high, in herdr-lin
   - **Team**: started stories of your team; a chooser row when you are in several teams.
   - **Epics**: open epics; Enter drills into an epic's stories.
   - **Recent**: the last 30 stories you started or opened (archived ones greyed).
-  - Rows: state icon, `sc-1234`, name, chips for epic, iteration, labels, PR count, and the priority value when a priority field is set. A "more…" footer appears when paging was cut (10 pages for Mine, 4 for the others).
+  - Rows: state icon, `sc-1234`, name, chips for epic, iteration, labels, PR count, and the priority value when a priority field is set. The PR count shows only on stories fetched in full (a key lookup, Recent for stories not in another list): Shortcut's search answers with slim stories, which carry no pull requests.
   - The filter narrows by text. A story key (`sc-1234`, `#1234` or `1234`) is also looked up across the whole workspace and offered as the first row.
   - It draws from the cache at once and refreshes in the background (lists after 60 s, reference data after 10 min). Offline it keeps the cache and says so.
 - **story.** Title, key, the story's link, the description as plain text, and a sidebar: state (menu), owners, requester, team, epic, iteration, labels, estimate, deadline, priority (menu, when configured), branches and pull requests.
@@ -60,7 +60,7 @@ Kept in `~/.config/herdr-app/data/shortcut.json`. A missing or broken file gives
 }
 ```
 
-- **auth.** `token` wins when present. Otherwise `env` names a variable, read with `sh -lc 'printf %s "$NAME"'` each time the popup opens. The name must match `^[A-Za-z_][A-Za-z0-9_]*$` and is never echoed. A pasted token is saved here and the file is set to mode 600. The settings screen shows it as `••••` plus its last four characters, with Clear; it never shows the whole value again. Test calls `GET /member` and shows your name or the error. The token is sent in one header and never logged or cached.
+- **auth.** `token` wins when present. Otherwise `env` names a variable, read each time the popup opens through your own shell, interactive and login (`$SHELL -ilc`), so a variable exported in `.zshrc` is found. The app's own environment does not have it, and `sh -lc` would read only `.profile`. What the shell's startup files print is ignored. The name must match `^[A-Za-z_][A-Za-z0-9_]*$` and is never echoed. A pasted token is saved here and the file is set to mode 600. The settings screen shows it as `••••` plus its last four characters, with Clear; it never shows the whole value again. Test calls `GET /member` and shows your name or the error. The token is sent in one header and never logged or cached.
 - **startPrompt.** The agent's first message, given to the launcher. Empty means no prompt.
 - **branchTemplate.** A live preview shows it for a sample story. A result `git check-ref-format --branch` rejects stops the start and points here.
 - Template variables: `{id}` `sc-1234`, `{number}` `1234`, `{slug}` the name lowercased and dashed (48 chars at most), `{title}` the name, `{url}` the story link, `{mention}` your mention name, `{branch}` (prompt only) the chosen branch. Unknown `{…}` stay as typed.
@@ -130,6 +130,8 @@ They run with a fake `herdr` module and a fake `fetch`; nothing reaches Shortcut
 - The popup cancels its tasks when it closes. A start that is still running when you press Esc may stop between the Shortcut update and the hand-off.
 - Members are not fetched: owners other than you are shown by count.
 - 429: the client waits for `Retry-After` once, then shows the error. It never retries in a loop.
+- `POST /stories/search` (v3) answers with the whole list as a plain array, no paging, and its stories are the slim kind: no pull requests or branches. Starting and the story screen fetch the full story.
+- `herdr-app shot` returns the last frame the window drew. While the screen is locked or the display is asleep the window draws nothing, so shots are stale (the mod still runs: `herdr-app status` and the cache file show it).
 - Local only: `machine` is always null.
 
 ## Follow-ups
