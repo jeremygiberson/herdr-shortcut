@@ -14,6 +14,8 @@ export const DEFAULTS = {
 
 const ITERATIONS = ["current-if-unset", "never"];
 const nonEmpty = (v) => typeof v === "string" && v.trim() !== "";
+/** A name that can be an environment variable (and so is interpolated into the shell safely). */
+export const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** Absolute path of the settings file. */
 export const dataPath = () => `${appHome()}/data/shortcut.json`;
@@ -24,7 +26,7 @@ export function normalize(raw) {
   const a = r.auth && typeof r.auth === "object" ? r.auth : {};
   const auth = typeof a.token === "string" && a.token.trim() !== ""
     ? { token: a.token }
-    : { env: nonEmpty(a.env) ? a.env : DEFAULTS.auth.env };
+    : { env: typeof a.env === "string" && ENV_NAME.test(a.env) ? a.env : DEFAULTS.auth.env };
   const startStates = {};
   if (r.startStates && typeof r.startStates === "object") {
     for (const [k, v] of Object.entries(r.startStates)) {
@@ -78,7 +80,8 @@ export async function save(cfg, raw) {
 export async function resolveToken(cfg) {
   if (cfg.auth.token) return { token: String(cfg.auth.token).trim(), error: null };
   const name = cfg.auth.env;
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return { token: "", error: `Not an environment variable name: "${name}"` };
+  // The name is not echoed: a token pasted in its place would be shown.
+  if (!ENV_NAME.test(name)) return { token: "", error: "Not an environment variable name" };
   const r = await exec("sh", ["-lc", 'printf %s "$' + name + '"']);
   return { token: String(r.stdout ?? "").trim(), error: null };
 }

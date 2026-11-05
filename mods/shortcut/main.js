@@ -5,7 +5,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import { theme, props, closeOverlay, openOverlay, nextCommand, appHome, readTextFile, spaces, panes, exec } from "herdr";
-import { load as loadSettings, save as saveSettings, resolveToken, normalize, storyVars, expand, DEFAULTS } from "./config.js";
+import { load as loadSettings, save as saveSettings, resolveToken, normalize, storyVars, expand, DEFAULTS, ENV_NAME } from "./config.js";
 import { createClient, ApiError, readCache, writeCache, fresh } from "./api.js";
 import { startDecision, branchCandidates, repoHints } from "./start.js";
 import { buildLaunchRequest, backTo, launcherReady, openLauncher } from "./launch.js";
@@ -870,8 +870,11 @@ export default class Shortcut extends View {
     // Each box is filled before its change handler is set, so filling it is not a change.
     this.envInput = InputState.new({ placeholder: "SHORTCUT_API_TOKEN" });
     this.envInput.set_value(this.cfg.auth.env ?? DEFAULTS.auth.env);
+    // Only a valid name is kept and saved: anything else (a token pasted here, say) is neither saved nor echoed.
     this.envInput.on("change", () => {
-      this.cfg.auth = { env: this.envInput.value().trim() };
+      const name = this.envInput.value().trim();
+      if (!ENV_NAME.test(name)) return this.say("Not a valid environment variable name", this.cx, true);
+      this.cfg.auth = { env: name };
       this.authDirty = true;
       this.scheduleSave(this.cx);
     });
@@ -926,7 +929,8 @@ export default class Shortcut extends View {
     if (mode === this.authMode) return;
     this.authMode = mode;
     if (mode === "env") {
-      this.cfg.auth = { env: this.envInput.value().trim() || DEFAULTS.auth.env };
+      const name = this.envInput.value().trim();
+      this.cfg.auth = { env: ENV_NAME.test(name) ? name : DEFAULTS.auth.env };
       this.authDirty = true;
       this.scheduleSave(cx);
     }
@@ -1078,7 +1082,7 @@ export default class Shortcut extends View {
         pick("au-tok", "Token", this.authMode === "token", (cx) => this.pickAuth("token", cx)),
         chip(o, "au-test", ["Test"], { click: this.guard("test", (cx) => this.testToken(cx)) })),
       this.authMode === "env" ? box(Input.new(this.envInput).w_full().font_family(MONO).text_size(12.5).text_color(o.fg))
-        : masked ? row(div().font_family(MONO).text_size(12.5).text_color(o.fg).child(`••••${token.slice(-4)}`),
+        : masked ? row(div().font_family(MONO).text_size(12.5).text_color(o.fg).child(token.length > 4 ? `••••${token.slice(-4)}` : "••••"),
           chip(o, "au-clear", ["Clear"], { click: this.guard("clear", (cx) => this.clearToken(cx)) }))
         : box(Input.new(this.tokenInput).w_full().font_family(MONO).text_size(12.5).text_color(o.fg)),
     ];

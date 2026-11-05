@@ -356,3 +356,17 @@ test("settings: a pasted token is saved with mode 600, then masked, and never sh
   assert.match(texts(v), /••••9999/);
   for (const s of [texts(v), v.flash, v.err]) assert.doesNotMatch(s, /newtok9999/);
 });
+test("settings: a token typed in the env name box is neither saved nor shown", async () => {
+  const { v, cx } = await open({ cfg: { auth: { env: "SC_UNSET_X" } }, routes: basic() });
+  press(v, cx, ",");
+  v.envInput.set_value("abc-def1234"); v.envInput.emit("change"); cx.fire(300); await cx.settle();
+  assert.doesNotMatch(readFileSync(dataPath(), "utf8"), /abc-def1234/);
+  assert.match(v.err, /environment variable name/);
+  v.testToken(cx); await cx.settle();
+  pushCommand("escape"); await cx.settle();
+  for (const s of [texts(v), v.flash, v.err, v.signInNote]) assert.doesNotMatch(s, /abc-def1234/);
+});
+test("settings: a short token is masked without a suffix", async () => {
+  const { v, cx } = await open({ cfg: { auth: { token: "T" } }, routes: basic() });
+  press(v, cx, ","); assert.match(texts(v), /••••/); assert.doesNotMatch(texts(v), /••••T/);
+});

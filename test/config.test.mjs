@@ -20,6 +20,9 @@ test("normalize fills defaults and drops unknown keys", () => {
 test("normalize edge cases", () => {
   assert.deepEqual(normalize({ auth: { token: "  ", env: "X_Y" } }).auth, { env: "X_Y" });
   assert.deepEqual(normalize({ auth: { token: "t", env: "X" } }).auth, { token: "t" });
+  // A token hand-edited into the env name is dropped for the default name.
+  assert.deepEqual(normalize({ auth: { env: "abc-def 1234" } }).auth, { env: "SHORTCUT_API_TOKEN" });
+  assert.deepEqual(normalize({ auth: { env: "1ABC" } }).auth, { env: "SHORTCUT_API_TOKEN" });
   assert.deepEqual(normalize({ startStates: { a: "x", b: 1.5, c: 3 } }).startStates, { c: 3 });
   assert.equal(normalize({ iteration: "bogus" }).iteration, "current-if-unset");
   assert.equal(normalize({ iteration: "never" }).iteration, "never");
@@ -51,7 +54,7 @@ test("resolveToken trims, prefers the pasted token, validates the env name", asy
   process.env.SC_TEST_TOKEN = "fromenv\n";
   assert.deepEqual(await resolveToken(normalize({ auth: { env: "SC_TEST_TOKEN" } })), { token: "fromenv", error: null });
   assert.deepEqual(await resolveToken(normalize({ auth: { env: "SC_UNSET_X" } })), { token: "", error: null });
-  assert.match((await resolveToken(normalize({ auth: { env: "bad name; rm" } }))).error, /Not an environment variable name/);
+  assert.equal((await resolveToken({ auth: { env: "bad name; rm" } })).error, "Not an environment variable name");
 });
 test("slug and templates", () => {
   assert.equal(slug("Fix the Thing!! (v2)"), "fix-the-thing-v2");
