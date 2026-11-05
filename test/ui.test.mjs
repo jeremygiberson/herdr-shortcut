@@ -428,3 +428,14 @@ test("settings: a short token is masked without a suffix", async () => {
   const { v, cx } = await open({ cfg: { auth: { token: "T" } }, routes: basic() });
   press(v, cx, ","); assert.match(texts(v), /••••/); assert.doesNotMatch(texts(v), /••••T/);
 });
+
+// The popup is as tall as its content, so a scroll region without a height of its own collapses to nothing: the
+// settings screen drew only its footer (2026-11-05). Like the list and the story body, it takes an explicit height.
+const byId = (el, id) => { if (el?.op?.("id")?.[0] === id) return el; for (const k of el?.kids ?? []) { const f = byId(k, id); if (f) return f; } return null; };
+test("settings: the scroll region has a height of its own, not flex_1", async () => {
+  const { v, cx } = await open({ cfg: { auth: { token: "abcdef1234" } }, routes: basic() });
+  press(v, cx, ","); assert.equal(v.screen, "settings");
+  const el = byId(v.render(), "settings");
+  assert.ok(el, "settings element drawn");
+  assert.equal(typeof el.op("h")?.[0], "number"); assert.ok(el.has("flex_shrink")); assert.ok(!el.has("flex_1"));
+});

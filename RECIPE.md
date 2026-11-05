@@ -31,6 +31,7 @@ Bound in `keys.json` (merged into `~/.config/herdr-app/keys.json`):
 | `cmd-alt-s` (global) | `mod.open:shortcut` | open or close the popup |
 | `escape` (in the popup) | `shortcut.escape` | back, clear the filter, or close |
 | `tab` / `shift-tab` (in the popup) | `shortcut.tab` / `shortcut.backtab` | next / previous tab, or field |
+| (none; `herdr-app do shortcut.settings`) | `shortcut.settings` | open the settings screen, for driving the popup from a shell |
 
 Without the `mod:shortcut` section Herdr closes the popup on Esc itself and the popup never sees Esc or Tab.
 
@@ -93,17 +94,14 @@ Kept in `~/.config/herdr-app/data/shortcut.json`. A missing or broken file gives
 
 ## Install
 
-Symlink (development, edits in the repo are live after the popup reopens):
+Copy (repeat after each update):
 
 ```bash
-ln -s ~/gitprojects/herdr-shortcut/mods/shortcut ~/.config/herdr-app/mods/shortcut
-```
-
-Copy (plain install, repeat after each update):
-
-```bash
+rm -rf ~/.config/herdr-app/mods/shortcut
 cp -R ~/gitprojects/herdr-shortcut/mods/shortcut ~/.config/herdr-app/mods/shortcut
 ```
+
+Not a symlink: the host refuses an SVG whose real path lies outside `~/.config/herdr-app`, so through a symlink the code runs but every icon (search, tabs, state rings, keycaps) is blank. Found 2026-11-05.
 
 Then:
 
@@ -135,6 +133,7 @@ They run with a fake `herdr` module and a fake `fetch`; nothing reaches Shortcut
 - `POST /stories/search` (v3) answers with the whole list as a plain array, no paging, and its stories are the slim kind: no pull requests or branches. Starting and the story screen fetch the full story.
 - `herdr-app shot` returns the last frame the window drew. While the screen is locked or the display is asleep the window draws nothing, so shots are stale (the mod still runs: `herdr-app status` and the cache file show it).
 - Local only: `machine` is always null.
+- The popup is as tall as its content. A scroll region (`overflow_y_scrollbar`) must have a height of its own (`h(...)`, with `min_h(0).flex_shrink(1)`); with `flex_1` alone it collapses to nothing, which is how the settings screen once drew only its footer.
 
 ## Follow-ups
 

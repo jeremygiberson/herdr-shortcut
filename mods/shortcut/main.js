@@ -118,6 +118,7 @@ export default class Shortcut extends View {
         try {
           const c = await nextCommand();
           if (c === "escape") this.escape(cx);
+          else if (c === "settings") this.openSettings(cx);
           else if ((c === "tab" || c === "backtab") && this.screen === "list") this.step(c === "tab" ? 1 : -1, cx);
           else if ((c === "tab" || c === "backtab") && this.screen === "create") this.nextField(cx);
           else if ((c === "tab" || c === "backtab") && this.screen === "settings" && !this.menu) this.settingsField(c === "tab" ? 1 : -1, cx);
@@ -1157,7 +1158,8 @@ export default class Shortcut extends View {
     });
     const field = (this.ref.customFields?.data ?? []).find((f) => f.id === c.priorityField);
     const launcher = c.launcher.kind === "mod" ? `Mod: ${c.launcher.name}` : "Shipped worktree dialog";
-    return v_flex().id("settings").flex_1().min_h(0).overflow_y_scrollbar().gap(6).pr(6)
+    // The popup is sized by its content, so the region needs a height of its own (like the list and the story body).
+    return v_flex().id("settings").h(LIST_H).min_h(0).flex_shrink(1).overflow_y_scrollbar().gap(6).pr(6)
       .child(div().text_size(15).font_semibold().text_color(o.fg).child("Settings"))
       .when(Boolean(this.cfgError), (el) => el.child(div().text_size(12.5).text_color(o.fix).child(this.cfgError)))
       .child(this.settingRow(o, "Auth", authValue, authHint))
