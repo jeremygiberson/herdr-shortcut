@@ -724,7 +724,8 @@ export default class Shortcut extends View {
       resume: (stateId, cx) => this.startTask(story.id, cx, async (cx) => {
         this.cfg.startStates[String(workflow.id)] = stateId;
         this.raw = await saveSettings(this.cfg, this.raw);
-        await this.decide(story, cx);
+        // A fresh copy: the story may have changed while the menu was open.
+        await this.decide(await this.client.story(story.id), cx);
       }),
     };
     this.screen = "pickState";

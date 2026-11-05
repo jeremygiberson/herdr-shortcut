@@ -89,7 +89,7 @@ Kept in `~/.config/herdr-app/data/shortcut.json`. A missing or broken file gives
 5. Nothing to change means no request. A rejected update is shown, and nothing is launched.
 6. The branch: an open PR's branch, else a story branch (`checkout: "existing"`), else the template (`"new"`). Several at the same level are asked about.
 7. The story goes to Recent (best effort: a failed save adds the note "recent not saved" and the start goes on), the launcher opens, and the popup closes. Any notes are shown for 1.5 s first.
-8. Anything that stops the start after the update (Esc on the branch menu, a launcher error) starts with "sc-1234 was updated in Shortcut; ": press `s` again to resume (the state is kept and the branch reused).
+8. Anything that stops the start after the update (Esc on the branch menu, a launcher error) starts with "sc-1234 was updated in Shortcut; ": press `s` again to resume.
 
 ## Install
 

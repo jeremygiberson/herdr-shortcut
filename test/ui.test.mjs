@@ -241,6 +241,17 @@ test("start: a workflow without a start state asks, persists, and continues", as
   assert.deepEqual(fetch.calls.find((c) => c.method === "PUT").body, { workflow_state_id: 12 });
   assert.equal(state.overlays.at(-1).mod, "worktree");
 });
+test("start: pickState resumes from a fresh copy of the story", async () => {
+  // Someone starts the story while pickState is open: the second GET answers it already In Review.
+  let gets = 0;
+  const routes = { ...basic(), "GET /stories/1": () => (++gets === 1 ? S(1, "Alpha", 11) : { ...S(1, "Alpha", 13), owner_ids: ["other"] }), "PUT /stories/1": (b) => ({ ...S(1, "Alpha", 13), ...b }) };
+  const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" }, iteration: "never" }, routes, space: ready() });
+  press(v, cx, "s"); await cx.settle();
+  assert.equal(v.screen, "pickState");
+  press(v, cx, "enter"); await cx.settle();
+  assert.equal(gets, 2);
+  assert.deepEqual(fetch.calls.find((c) => c.method === "PUT").body, { owner_ids: ["other", "me"] });
+});
 test("a stale start state opens pickState and is dropped", async () => {
   const { v, cx } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 999 } }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11) }, space: ready() });
   press(v, cx, "s"); await cx.settle();
