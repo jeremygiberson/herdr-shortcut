@@ -8,7 +8,7 @@ import { theme, props, closeOverlay, openOverlay, nextCommand, appHome, readText
 import { load as loadSettings, save as saveSettings, resolveToken, normalize, storyVars, expand, DEFAULTS } from "./config.js";
 import { createClient, ApiError, readCache, writeCache, fresh } from "./api.js";
 import { startDecision, branchCandidates, repoHints } from "./start.js";
-import { buildLaunchRequest, backTo, openLauncher } from "./launch.js";
+import { buildLaunchRequest, backTo, launcherReady, openLauncher } from "./launch.js";
 import { tones, tint, icon, chip, key, countPill, stateIcon, stateColor, MONO } from "./look.js";
 
 const TABS = [
@@ -618,7 +618,18 @@ export default class Shortcut extends View {
 
   startStory(story, cx) {
     if (!story || !this.client || this.busy || this.pick || this.branching) return;
-    this.startTask(story.id, cx, async (cx) => this.decide(await this.client.story(story.id), cx));
+    this.startTask(story.id, cx, async (cx) => {
+      const fresh = await this.client.story(story.id);
+      // The launcher must be able to take it before the ticket is touched (spec 7: the finder's work happens first,
+      // but a start the launcher would refuse for its configuration does not start at all).
+      const ready = await launcherReady({ cfg: this.cfg, space: this.activeSpace(), panes: panes(), exec, readTextFile });
+      if (ready.error) return this.say(ready.error, cx, true);
+      await this.decide(fresh, cx);
+    });
+  }
+
+  activeSpace() {
+    return spaces().find((s) => s.active) ?? null;
   }
 
   // One stage of a start in its own task, with the busy line while it runs; whatever it throws is shown.
@@ -666,6 +677,7 @@ export default class Shortcut extends View {
   // pickState: the workflow's states that are not done; the one chosen is kept and the start goes on from step 3.
   askStartState(story, workflow, cx) {
     const states = [...(workflow.states ?? [])].filter((x) => x.type !== "done").sort(byPosition);
+    if (!states.length) return this.say(`${workflow.name} has no state to start in`, cx, true);
     this.pick = {
       story, workflow, from: this.screen,
       resume: (stateId, cx) => this.startTask(story.id, cx, async (cx) => {
@@ -701,15 +713,16 @@ export default class Shortcut extends View {
       cfg: this.cfg,
       launch: buildLaunchRequest({ story, branch, checkout, prompt, hints: repoHints(story) }),
       back: backTo(story),
-      space: spaces().find((s) => s.active) ?? null,
+      space: this.activeSpace(),
       panes: panes(),
       exec, openOverlay, readTextFile,
     });
     if (r.error) return this.say(r.error, cx, true);
+    // Anything said (the start's notes, the launcher's note) is shown for 1.5 s before the popup closes.
     const said = [...notes, r.note].filter(Boolean).join(" · ");
-    if (said) this.say(said, cx);
-    if (r.note == null) return this.dismiss();
-    cx.timer.after(1500, () => this.dismiss());
+    if (!said) return this.dismiss();
+    this.say(said, cx);
+    this.cx.timer.after(1500, () => this.dismiss());
   }
 
   // Esc on pickState or the branch menu: the start stops there, nothing more is written.

@@ -5,7 +5,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { makeRepo, scratch } from "./helpers/repo.mjs";
 import { state, reset, exec, openOverlay, readTextFile } from "./helpers/herdr-stub.mjs";
 const { normalize } = await import("../mods/shortcut/config.js");
-const { buildLaunchRequest, backTo, spaceFolder, openLauncher } = await import("../mods/shortcut/launch.js");
+const { buildLaunchRequest, backTo, spaceFolder, openLauncher, launcherReady } = await import("../mods/shortcut/launch.js");
 
 beforeEach(reset);
 
@@ -41,4 +41,15 @@ test("mod launcher: must be installed, then gets launch and backTo as a dialog",
 test("spaceFolder prefers a live pane's cwd", () => {
   assert.equal(spaceFolder({ folder: "/f", tabs: [{ id: "t1" }] }, [{ tab: "t1", cwd: "/f/sub" }]), "/f/sub");
   assert.equal(spaceFolder({ folder: "/f", tabs: [] }, []), "/f");
+});
+test("launcherReady: a mod must be installed; the shipped one needs a selected space in a git repo", async () => {
+  const mod = normalize({ launcher: { kind: "mod", name: "projects" } });
+  assert.deepEqual(await launcherReady({ cfg: mod, space: null, panes: [], exec, readTextFile }), { error: 'launcher "projects" is not installed' });
+  mkdirSync(`${state.appHome}/mods/projects`, { recursive: true }); writeFileSync(`${state.appHome}/mods/projects/main.js`, "");
+  assert.deepEqual(await launcherReady({ cfg: mod, space: null, panes: [], exec, readTextFile }), { ok: true });
+  const shipped = normalize({});
+  const NO = { error: "Select a space in the repo first, or choose a launcher mod in settings" };
+  assert.deepEqual(await launcherReady({ cfg: shipped, space: null, panes: [], exec, readTextFile }), NO);
+  assert.deepEqual(await launcherReady({ cfg: shipped, space: { id: "s", folder: scratch(), tabs: [] }, panes: [], exec, readTextFile }), NO);
+  assert.deepEqual(await launcherReady({ cfg: shipped, space: { id: "s", folder: makeRepo(), tabs: [] }, panes: [], exec, readTextFile }), { ok: true });
 });

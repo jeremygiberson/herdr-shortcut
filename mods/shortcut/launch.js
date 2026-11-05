@@ -47,11 +47,20 @@ export async function launcherExists(name, readTextFile) {
   return typeof (await readTextFile(`${appHome()}/mods/${name}/main.js`)) === "string";
 }
 
+const notInstalled = (name) => ({ error: `launcher "${name}" is not installed` });
+
+/** Checks the configured launcher can take a start, before the ticket is touched; { ok: true } or { error }. */
+export async function launcherReady({ cfg, space, panes, exec, readTextFile }) {
+  if (cfg.launcher.kind === "mod") return (await launcherExists(cfg.launcher.name, readTextFile)) ? { ok: true } : notInstalled(cfg.launcher.name);
+  const pre = await shippedPreflight({ space, panes, exec });
+  return pre.error ? { error: pre.error } : { ok: true };
+}
+
 /** Opens the configured launcher with the request; { ok, note } or { error }. */
 export async function openLauncher({ cfg, launch, back, space, panes, exec, openOverlay, readTextFile }) {
   if (cfg.launcher.kind === "mod") {
     const name = cfg.launcher.name;
-    if (!(await launcherExists(name, readTextFile))) return { error: `launcher "${name}" is not installed` };
+    if (!(await launcherExists(name, readTextFile))) return notInstalled(name);
     openOverlay({ mod: name, kind: "dialog", width: 0.8, height: 0.8, props: { launch, ...(back ? { backTo: back } : {}) } });
     return { ok: true, note: null };
   }

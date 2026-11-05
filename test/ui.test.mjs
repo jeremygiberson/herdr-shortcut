@@ -197,12 +197,15 @@ test("Esc with a menu open closes only the menu", async () => {
   pushCommand("escape"); await cx.settle();
   assert.equal(v.menu, null); assert.equal(v.screen, "story"); assert.equal(state.closed, 0);
 });
+// A selected space in a git repo: the shipped launcher's preflight passes.
+const ready = () => ({ id: "s", folder: makeRepo(), tabs: [] });
+const installProjects = () => { mkdirSync(`${state.appHome}/mods/projects`, { recursive: true }); writeFileSync(`${state.appHome}/mods/projects/main.js`, ""); };
 test("start: updates Shortcut, records recent, opens the configured mod launcher, closes", async () => {
   const iter = [{ id: 99, name: "It 9", status: "started", group_ids: ["g"] }];
   const routes = { ...basic(), "GET /iterations": iter, "GET /stories/1": { ...S(1, "Alpha", 11), owner_ids: ["other"], group_id: "g" }, "PUT /stories/1": (b) => ({ ...S(1, "Alpha", b.workflow_state_id), owner_ids: b.owner_ids }) };
   const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 }, launcher: { kind: "mod", name: "projects" } }, routes });
   // After open: open() resets the app home, mods/ included. The launcher is looked for only when the start runs.
-  mkdirSync(`${state.appHome}/mods/projects`, { recursive: true }); writeFileSync(`${state.appHome}/mods/projects/main.js`, "");
+  installProjects();
   press(v, cx, "s"); await cx.settle();
   assert.deepEqual(fetch.calls.find((c) => c.method === "PUT").body, { workflow_state_id: 12, owner_ids: ["other", "me"], iteration_id: 99 });
   const o = state.overlays.at(-1);
@@ -223,17 +226,17 @@ test("start: a workflow without a start state asks, persists, and continues", as
   assert.equal(state.overlays.at(-1).mod, "worktree");
 });
 test("a stale start state opens pickState and is dropped", async () => {
-  const { v, cx } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 999 } }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11) } });
+  const { v, cx } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 999 } }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11) }, space: ready() });
   press(v, cx, "s"); await cx.settle();
   assert.equal(v.screen, "pickState");
   pushCommand("escape"); await cx.settle();
   assert.equal(v.screen, "list"); assert.deepEqual(JSON.parse(readFileSync(dataPath(), "utf8")).startStates, {});
 });
 test("start: done is refused; a Shortcut error stops before the launcher", async () => {
-  const { v, cx } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 } }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 14) } });
+  const { v, cx } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 } }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 14) }, space: ready() });
   press(v, cx, "s"); await cx.settle();
   assert.equal(v.err, "sc-1 is done. Follow-up work belongs in a new story."); assert.equal(state.overlays.length, 0);
-  const bad = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 } }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11), "PUT /stories/1": { status: 422, body: { message: "Nope" } } } });
+  const bad = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 } }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11), "PUT /stories/1": { status: 422, body: { message: "Nope" } } }, space: ready() });
   press(bad.v, bad.cx, "s"); await bad.cx.settle();
   assert.equal(bad.v.err, "Nope"); assert.equal(state.overlays.length, 0);
 });
@@ -246,13 +249,13 @@ test("start: several open PR branches ask which, and reuse it as existing", asyn
   assert.deepEqual(state.overlays.at(-1).props, { folder: repo, machine: null, branch: "b", space: "s" });
 });
 test("start: an invalid branch from the template is refused before any launcher", async () => {
-  const { v, cx } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 }, branchTemplate: "{mention}/..{slug}" }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11), "PUT /stories/1": (b) => S(1, "Alpha", b.workflow_state_id) } });
+  const { v, cx } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 }, branchTemplate: "{mention}/..{slug}" }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11), "PUT /stories/1": (b) => S(1, "Alpha", b.workflow_state_id) }, space: ready() });
   press(v, cx, "s"); await cx.settle();
   assert.match(v.err, /is not a valid branch name/); assert.equal(state.overlays.length, 0);
 });
 test("start: Esc on the branch menu cancels with nothing written and no launcher", async () => {
   const prs = [{ branch_name: "a", merged: false, closed: false }, { branch_name: "b", merged: false, closed: false }];
-  const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 } }, routes: { ...basic(), "GET /stories/1": { ...S(1, "Alpha", 11), pull_requests: prs }, "PUT /stories/1": (b) => ({ ...S(1, "Alpha", b.workflow_state_id), pull_requests: prs }) } });
+  const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 } }, routes: { ...basic(), "GET /stories/1": { ...S(1, "Alpha", 11), pull_requests: prs }, "PUT /stories/1": (b) => ({ ...S(1, "Alpha", b.workflow_state_id), pull_requests: prs }) }, space: ready() });
   press(v, cx, "s"); await cx.settle();
   assert.equal(v.menu.kind, "branch");
   const puts = fetch.calls.filter((c) => c.method === "PUT").length;
@@ -260,4 +263,41 @@ test("start: Esc on the branch menu cancels with nothing written and no launcher
   assert.equal(v.menu, null); assert.equal(v.flash, "Start cancelled"); assert.equal(v.busy, "");
   assert.equal(fetch.calls.filter((c) => c.method === "PUT").length, puts); assert.equal(state.overlays.length, 0); assert.equal(state.closed, 0);
   assert.equal(JSON.parse(readFileSync(dataPath(), "utf8")).recent, undefined);
+});
+test("start: the notes are shown for 1.5 s before the popup closes", async () => {
+  const { v, cx } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 }, iteration: "never", launcher: { kind: "mod", name: "projects" } }, routes: { ...basic(), "GET /stories/2": S(2, "Beta", 12) } });
+  installProjects();
+  v.at = v.shownRows().findIndex((r) => r.story?.id === 2); press(v, cx, "s"); await cx.settle();
+  assert.equal(state.overlays.at(-1).mod, "projects");
+  assert.match(v.flash, /state kept: In Dev/); assert.equal(state.closed, 0);
+  cx.fire(1500); assert.equal(state.closed, 1);
+});
+test("start: a mod launcher that is not installed refuses before the ticket is touched", async () => {
+  const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 }, launcher: { kind: "mod", name: "projects" } }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11), "PUT /stories/1": (b) => S(1, "Alpha", b.workflow_state_id) } });
+  press(v, cx, "s"); await cx.settle();
+  assert.equal(v.err, 'launcher "projects" is not installed'); assert.equal(v.busy, "");
+  assert.equal(fetch.calls.filter((c) => c.method === "PUT").length, 0); assert.equal(state.overlays.length, 0);
+  assert.equal(JSON.parse(readFileSync(dataPath(), "utf8")).recent, undefined);
+});
+test("start: the shipped launcher with no selected space refuses before the ticket is touched", async () => {
+  const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 } }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11), "PUT /stories/1": (b) => S(1, "Alpha", b.workflow_state_id) } });
+  press(v, cx, "s"); await cx.settle();
+  assert.equal(v.err, "Select a space in the repo first, or choose a launcher mod in settings");
+  assert.equal(fetch.calls.filter((c) => c.method === "PUT").length, 0); assert.equal(state.overlays.length, 0);
+});
+test("start: a second s while one is on its way is ignored", async () => {
+  const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 } }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11), "PUT /stories/1": (b) => S(1, "Alpha", b.workflow_state_id) }, space: ready() });
+  press(v, cx, "s"); press(v, cx, "s"); await cx.settle();
+  assert.equal(fetch.calls.filter((c) => c.method === "GET" && c.path === "/stories/1").length, 1);
+});
+test("start: a workflow with no state but done is refused instead of an empty pickState", async () => {
+  const wf = { id: 2, name: "Ops", states: [{ id: 20, name: "Done", type: "done" }, { id: 21, name: "Open", type: "unstarted" }] };
+  const story = { ...S(3, "Gamma", 21), workflow_id: 2 };
+  const onlyDone = { ...wf, states: [wf.states[0]] };
+  // The story's own state is not in the workflow (as after a workflow edit): not done, so not refused as done.
+  const { v, cx } = await open({ cfg: { auth: { token: "T" } }, routes: { ...basic(), "GET /workflows": [WF, onlyDone], "GET /stories/3": story }, space: ready() });
+  v.input.set_value("sc-3"); await cx.settle();
+  press(v, cx, "s"); await cx.settle();
+  assert.notEqual(v.screen, "pickState"); assert.equal(v.menu, null);
+  assert.equal(v.err, "Ops has no state to start in");
 });
