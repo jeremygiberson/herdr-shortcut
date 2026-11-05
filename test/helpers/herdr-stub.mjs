@@ -20,6 +20,7 @@ export const state = {
 };
 
 let waiting = null;
+let waits = 0;
 const store = {};
 
 export function reset() {
@@ -37,7 +38,9 @@ reset();
 export const pushCommand = (c) => {
   if (waiting) { const w = waiting; waiting = null; w(c); } else state.commands.push(c);
 };
-export const nextCommand = () => (state.commands.length ? Promise.resolve(state.commands.shift()) : new Promise((r) => { waiting = r; }));
+// How many times nextCommand was called: a spawn that calls it is a command loop, which never ends.
+export const commandWaits = () => waits;
+export const nextCommand = () => (waits++, state.commands.length ? Promise.resolve(state.commands.shift()) : new Promise((r) => { waiting = r; }));
 
 export const home = () => state.home;
 export const appHome = () => state.appHome;
