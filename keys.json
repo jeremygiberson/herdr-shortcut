@@ -1,0 +1,2 @@
+{ "global": { "cmd-alt-s": "mod.open:shortcut" },
+  "mod:shortcut": { "escape": "shortcut.escape", "tab": "shortcut.tab", "shift-tab": "shortcut.backtab" } }
