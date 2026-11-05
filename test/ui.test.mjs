@@ -6,7 +6,8 @@ import { state, reset, pushCommand } from "./helpers/herdr-stub.mjs";
 import { WF, S, basic } from "./helpers/fixtures.mjs";
 const { readCache, writeCache } = await import("../mods/shortcut/api.js");
 
-beforeEach(reset);
+// Each test starts on Mine: the tab chosen is kept in localStorage, which outlives a test.
+beforeEach(() => { reset(); localStorage.clear(); });
 test("the popup renders its title", async () => {
   const { v } = await open({ routes: { "GET /member": { status: 401, body: { message: "Unauthorized" } } } });
   assert.match(texts(v), /Shortcut/);
@@ -130,7 +131,8 @@ test("Recent draws an archived story with an archived chip and skips ids that fa
   assert.match(texts(v), /archived/);
 });
 test("Recent never resolves a story id to an epic with the same id", async () => {
-  const routes = { ...basic(), "GET /epics": [{ id: 1, name: "EpicOne", archived: false, completed: false }], "GET /stories/1": S(1, "StoryOne", 11) };
+  // Mine is empty, so story 1 is not already in a list (Recent would reuse that copy).
+  const routes = { ...basic(), "GET /epics": [{ id: 1, name: "EpicOne", archived: false, completed: false }], "GET /stories/1": S(1, "StoryOne", 11), "POST /stories/search": { data: [], next: null } };
   const { v, cx } = await open({ cfg: { auth: { token: "T" }, recent: [{ id: 1, at: "a" }] }, routes });
   press(v, cx, "3"); await cx.settle();
   press(v, cx, "4"); await cx.settle();
@@ -144,4 +146,36 @@ test("a drilled epic is titled and Esc leaves the filter alone", async () => {
   assert.match(texts(v), /Epic · Big/);
   pushCommand("escape"); await cx.settle();
   assert.equal(v.drilled, null); assert.equal(v.filter, "big");
+});
+test("Enter opens a story with its fields, and Esc returns to its row", async () => {
+  const routes = { ...basic(), "GET /stories/2": { ...S(2, "Beta", 12), description: "Para one.\n\nPara two.", labels: [{ name: "bug" }], pull_requests: [{ number: 5, title: "PR", url: "https://github.com/o/r/pull/5", merged: false, closed: false, draft: false, branch_name: "jer/sc-2/beta" }] } };
+  const { v, cx } = await open({ cfg: { auth: { token: "T" } }, routes });
+  v.at = v.shownRows().findIndex((r) => r.story?.id === 2); v.input.emit("submit"); await cx.settle();
+  assert.equal(v.screen, "story");
+  const t = texts(v); assert.match(t, /Para two\./); assert.match(t, /bug/); assert.match(t, /#5/); assert.match(t, /In Dev/);
+  pushCommand("escape"); await cx.settle(); assert.equal(v.screen, "list"); assert.equal(v.shownRows()[v.at].story.id, 2);
+});
+test("t changes the state through the menu", async () => {
+  const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" } }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11), "PUT /stories/1": (b) => S(1, "Alpha", b.workflow_state_id) } });
+  v.input.emit("submit"); await cx.settle();
+  press(v, cx, "t"); assert.deepEqual(v.menu.items.map((i) => i.label), ["Backlog", "Ready", "In Dev", "In Review", "Done"]);
+  assert.equal(v.menu.at, 1); // its own state, Ready, is chosen
+  press(v, cx, "down"); press(v, cx, "enter"); await cx.settle();
+  assert.deepEqual(fetch.calls.find((c) => c.method === "PUT").body, { workflow_state_id: 12 });
+});
+test("p is only offered with a priority field, and sets the custom field", async () => {
+  const fields = [{ id: "f1", name: "Priority", enabled: true, values: [{ id: "v1", value: "High", enabled: true, position: 0 }, { id: "v2", value: "Low", enabled: true, position: 1 }] }];
+  const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" }, priorityField: "f1" }, routes: { ...basic(), "GET /custom-fields": fields, "GET /stories/1": S(1, "Alpha", 11), "PUT /stories/1": (b) => S(1, "Alpha", 11) } });
+  v.input.emit("submit"); await cx.settle();
+  assert.match(texts(v), /priority/);
+  press(v, cx, "p"); press(v, cx, "down"); press(v, cx, "enter"); await cx.settle();
+  assert.deepEqual(fetch.calls.find((c) => c.method === "PUT").body, { custom_fields: [{ field_id: "f1", value_id: "v2" }] });
+  const plain = await open({ cfg: { auth: { token: "T" } }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11) } });
+  plain.v.input.emit("submit"); await plain.cx.settle(); press(plain.v, plain.cx, "p"); assert.equal(plain.v.menu, null);
+});
+test("opened with props on a story, Esc goes back to the opener", async () => {
+  const { v, cx } = await open({ cfg: { auth: { token: "T" } }, routes: { ...basic(), "GET /stories/2": S(2, "Beta", 12) }, props: { screen: "story", id: 2, backTo: { mod: "projects", props: { x: 1 } } } });
+  assert.equal(v.screen, "story");
+  pushCommand("escape"); await cx.settle();
+  assert.equal(state.closed, 1); assert.deepEqual(state.overlays.at(-1), { mod: "projects", kind: "dialog", width: 0.8, height: 0.8, props: { x: 1 } });
 });

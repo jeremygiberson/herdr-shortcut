@@ -4,10 +4,11 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
-import { theme, props, closeOverlay, nextCommand } from "herdr";
-import { load as loadSettings, resolveToken, normalize, DEFAULTS } from "./config.js";
+import { theme, props, closeOverlay, openOverlay, nextCommand, appHome, readTextFile } from "herdr";
+import { load as loadSettings, resolveToken, normalize, storyVars, DEFAULTS } from "./config.js";
 import { createClient, ApiError, readCache, writeCache, fresh } from "./api.js";
-import { tones, icon, chip, key, countPill, stateIcon, stateColor, MONO } from "./look.js";
+import { branchCandidates } from "./start.js";
+import { tones, tint, icon, chip, key, countPill, stateIcon, stateColor, MONO } from "./look.js";
 
 const TABS = [
   { id: "mine", label: "Mine", icon: "person" },
@@ -29,6 +30,11 @@ const LIST_MAX = 60 * 1000;
 const HEADING_H = 30;
 const ROW_H = 36;
 const LIST_H = 560;
+
+// A pull request's url, https://<host>/<owner>/<name>/pull/<n>: the host and the repo the github mod takes.
+const PR_URL = /^https?:\/\/([^/]+)\/([^/]+\/[^/]+)\/pull\/(\d+)/;
+
+const byPosition = (a, b) => (a.position ?? 0) - (b.position ?? 0);
 
 // The key as a binding spells it ("ctrl-s", "escape"): the event's own spelling when it has one.
 function chord(e) {
@@ -67,6 +73,9 @@ export default class Shortcut extends View {
     this.searchSeq = 0;
     this.at = 0;
     this.cur = null;
+    this.menu = null; // { kind: "state"|"priority"|"branch"|"launcher", items: [{ label, value }], at }
+    this.prAt = -1; // the story screen's highlighted pull request (-1: none)
+    this.github = false; // the github mod is installed: a story's pull requests open there
     this.typing = false;
     this.flash = this.err = this.busy = "";
 
@@ -136,6 +145,7 @@ export default class Shortcut extends View {
     this.cfg = s.cfg;
     this.raw = s.raw;
     this.cfgError = s.error;
+    this.github = (await readTextFile(`${appHome()}/mods/github/main.js`).catch(() => null)) != null;
     const { token, error } = await resolveToken(this.cfg);
     this.cache = await readCache();
     for (const k of REF) if (this.cache[k]) this.ref[k] = this.cache[k];
@@ -148,6 +158,13 @@ export default class Shortcut extends View {
     this.client = createClient({ token });
     cx.notify();
     this.refreshAll(cx);
+    if (this.openWith) {
+      try {
+        this.openStory(await this.client.story(Number(this.openWith)), cx, { refetch: false });
+      } catch (e) {
+        this.say(`sc-${this.openWith}: ${e?.message ?? e}`, cx, true);
+      }
+    }
   }
 
   get me() {
@@ -393,6 +410,15 @@ export default class Shortcut extends View {
     this.scroll.scroll_to_item(this.at === first ? 0 : this.at);
   }
 
+  // The chosen row is always a story (or an epic): the first at or after it, else the last one.
+  pick(rows) {
+    const pickable = (r) => r.story || r.epic;
+    if (pickable(rows[this.at] ?? {})) return;
+    let i = rows.findIndex((r, j) => j >= this.at && pickable(r));
+    for (let j = rows.length - 1; i < 0 && j >= 0; j--) if (pickable(rows[j])) i = j;
+    this.at = Math.max(0, i);
+  }
+
   selected() {
     return (this.shown ?? this.shownRows())[this.at]?.story ?? null;
   }
@@ -416,6 +442,7 @@ export default class Shortcut extends View {
   }
 
   enter(cx) {
+    this.pick(this.shown ?? this.shownRows());
     const s = this.selected();
     if (s) return this.openStory(s, cx);
     const e = this.selectedEpic();
@@ -438,13 +465,130 @@ export default class Shortcut extends View {
     cx.notify();
   }
 
-  // ── actions (the screens they lead to come in later tasks) ─────────────
+  // ── the story ──────────────────────────────────────────────────────────
 
-  openStory(story, cx) {
+  // Its screen at once, from the copy the list has; then a fresh copy, which replaces it (and its row).
+  openStory(story, cx, { refetch = true } = {}) {
     this.cur = story;
     this.screen = "story";
+    this.menu = null;
+    this.prAt = -1;
+    this.err = this.flash = "";
+    // The filter is not drawn here: the keyboard goes to the popup's own keys.
+    this.focus.focus?.();
+    cx.notify();
+    if (!refetch || !this.client) return;
+    cx.spawn(async (cx) => {
+      try {
+        const s = await this.client.story(story.id);
+        if (this.screen === "story" && this.cur?.id === story.id) {
+          this.replaceStory(s);
+          await this.keep();
+        }
+      } catch (e) {
+        if (story.workflow_state_id == null && this.cur?.id === story.id) this.err = String(e?.message ?? e);
+      }
+      cx.notify();
+    });
+  }
+
+  // A newer copy of a story: the shown one, and its row in the shown list (the cache holds the same list).
+  replaceStory(s) {
+    if (!s) return;
+    if (this.cur?.id === s.id) this.cur = s;
+    if (this.listId() === "epics") return;
+    const l = this.lists[this.listId()];
+    const i = Array.isArray(l?.data) ? l.data.findIndex((x) => x.id === s.id) : -1;
+    if (i >= 0) l.data[i] = s;
+  }
+
+  // The branch a start would use: its open PR's, else its own, else the template's.
+  branchOf(story) {
+    return branchCandidates(story, this.cfg, storyVars(story, this.me)).candidates[0];
+  }
+
+  // The states of its workflow in their order, all of them (by hand a story may go anywhere), its own chosen.
+  stateMenu(cx) {
+    const s = this.cur;
+    const states = [...(this.workflowOf(s)?.states ?? [])].sort(byPosition);
+    if (!states.length) return this.say("Its workflow is not loaded yet.", cx, true);
+    this.menu = { kind: "state", items: states.map((x) => ({ label: x.name, value: x.id })), at: Math.max(0, states.findIndex((x) => x.id === s.workflow_state_id)) };
     cx.notify();
   }
+
+  // The configured priority field's values, its own chosen (else the first).
+  priorityMenu(cx) {
+    const s = this.cur;
+    const f = this.cfg.priorityField;
+    const field = (this.ref.customFields?.data ?? []).find((x) => x.id === f);
+    const values = (field?.values ?? []).filter((x) => x.enabled !== false).sort(byPosition);
+    if (!values.length) return this.say("The priority field is not loaded yet.", cx, true);
+    const own = (s.custom_fields ?? []).find((x) => x.field_id === f)?.value_id;
+    this.menu = { kind: "priority", items: values.map((x) => ({ label: x.value, value: x.id })), at: Math.max(0, values.findIndex((x) => x.id === own)) };
+    cx.notify();
+  }
+
+  choose(item, cx) {
+    const m = this.menu;
+    this.menu = null;
+    const s = this.cur;
+    if (m && item && s) {
+      if (m.kind === "state" && item.value !== s.workflow_state_id) this.update(s, { workflow_state_id: item.value }, `Moved sc-${s.id} to ${item.label}`, cx);
+      else if (m.kind === "priority") this.update(s, { custom_fields: [{ field_id: this.cfg.priorityField, value_id: item.value }] }, `sc-${s.id}'s priority: ${item.label}`, cx);
+      // "branch" (Task 9) and "launcher" (Task 11) menus are chosen here too.
+    }
+    cx.notify();
+  }
+
+  update(story, patch, done, cx) {
+    this.busy = `Updating sc-${story.id}…`;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const s = await this.client.updateStory(story.id, patch);
+        this.busy = "";
+        this.replaceStory(s);
+        this.say(done, cx);
+        await this.keep();
+      } catch (e) {
+        this.busy = "";
+        if (e instanceof ApiError) this.say(e.message, cx, true);
+        else this.fail("update", e);
+      }
+    });
+  }
+
+  // A pull request on its screen in the github mod (Esc there comes back to this story), else in the browser.
+  openPR(pr, cx) {
+    const m = PR_URL.exec(pr.url ?? "");
+    if (!this.github || !m) return this.open(pr.url, cx);
+    const id = this.cur.id;
+    this.dismiss();
+    openOverlay({ mod: "github", kind: "dialog", width: 0.8, height: 0.8, props: {
+      pr: { host: m[1], repo: m[2], number: pr.number ?? Number(m[3]) },
+      backTo: { mod: "shortcut", label: `sc-${id}`, props: { screen: "story", id } },
+    } });
+  }
+
+  // Out of the story: to the mod that opened it on this story (or closed, when none said where), else to its row.
+  back(cx) {
+    if (this.openWith) {
+      this.dismiss();
+      if (this.backTo) openOverlay({ mod: this.backTo.mod, kind: "dialog", width: 0.8, height: 0.8, props: this.backTo.props ?? {} });
+      return;
+    }
+    const id = this.cur?.id;
+    this.screen = "list";
+    this.menu = null;
+    this.prAt = -1;
+    this.err = this.flash = "";
+    const i = this.shownRows().findIndex((r) => r.story?.id === id);
+    if (i >= 0) this.at = i;
+    cx.timer.after(30, () => this.screen === "list" && this.input.focus());
+    cx.notify();
+  }
+
+  // ── actions (the screens they lead to come in later tasks) ─────────────
 
   startStory(_story, _cx) {}
 
@@ -456,6 +600,12 @@ export default class Shortcut extends View {
     if (url) cx.open_url(url);
   }
 
+  copy(text, cx) {
+    if (!text) return;
+    cx.write_to_clipboard(text);
+    this.say(`Copied ${text}`, cx);
+  }
+
   say(text, cx, isErr = false) {
     this.flash = isErr ? "" : text;
     this.err = isErr ? text : "";
@@ -464,6 +614,11 @@ export default class Shortcut extends View {
 
   // On the list: a filter is cleared first (wherever the keyboard is), an empty one closes the popup.
   escape(cx) {
+    if (this.menu) {
+      this.menu = null;
+      return cx.notify();
+    }
+    if (this.screen === "story") return this.back(cx);
     if (this.screen === "list" && this.drilled) {
       this.drilled = null;
       this.at = 0;
@@ -493,6 +648,7 @@ export default class Shortcut extends View {
     let handled = true;
     if (k === "escape") this.escape(cx);
     else if (this.screen === "list") handled = this.listKey(k, cx);
+    else if (this.screen === "story") handled = this.storyKey(k, cx);
     else if (this.screen === "signIn") handled = this.signInKey(k, cx);
     else handled = false;
     if (!handled) return;
@@ -518,6 +674,36 @@ export default class Shortcut extends View {
     else if (k === "s" && s) this.startStory(s, cx);
     else if (k === "n") this.create(cx);
     else if (k === ",") this.openSettings(cx);
+    else return false;
+    return true;
+  }
+
+  // ↑ ↓ move over its pull requests; Enter opens the highlighted one.
+  storyKey(k, cx) {
+    if (this.menu) return this.menuKey(k, cx);
+    const s = this.cur;
+    const pr = (s.pull_requests ?? [])[this.prAt];
+    if (k === "down") this.prAt = Math.min(this.prAt + 1, (s.pull_requests ?? []).length - 1);
+    else if (k === "up") this.prAt = Math.max(this.prAt - 1, -1);
+    else if (k === "enter" && pr) this.open(pr.url, cx);
+    else if (k === "s") this.startStory(s, cx);
+    else if (k === "t") this.stateMenu(cx);
+    else if (k === "p" && this.cfg.priorityField) this.priorityMenu(cx);
+    else if (k === "o") this.open(s.app_url, cx);
+    else if (k === "y") this.copy(`sc-${s.id}`, cx);
+    else if (k === "b") this.copy(this.branchOf(s), cx);
+    else if (k === "g" && pr) this.openPR(pr, cx);
+    else return false;
+    return true;
+  }
+
+  menuKey(k, cx) {
+    const m = this.menu;
+    const n = m.items.length;
+    if (k === "down") m.at = (m.at + 1) % n;
+    else if (k === "up") m.at = (m.at + n - 1) % n;
+    else if (k === "enter") this.choose(m.items[m.at], cx);
+    else if (/^[1-9]$/.test(k) && Number(k) <= n) this.choose(m.items[Number(k) - 1], cx);
     else return false;
     return true;
   }
@@ -666,6 +852,23 @@ export default class Shortcut extends View {
     if (this.screen === "signIn") {
       return [k([","], "settings", (cx) => this.openSettings(cx), "f-set"), k(["esc"], "close", (cx) => this.escape(cx), "f-esc")];
     }
+    if (this.menu) {
+      return [k(["↑", "↓"], "choose", () => {}, "f-ch"), k(["enter"], "set", (cx) => this.choose(this.menu.items[this.menu.at], cx), "f-go"), k(["esc"], "cancel", (cx) => this.escape(cx), "f-esc")];
+    }
+    if (this.screen === "story") {
+      const s = this.cur;
+      const pr = (s.pull_requests ?? [])[this.prAt];
+      return [
+        k(["s"], "start", (cx) => this.startStory(s, cx), "f-s"),
+        k(["t"], "state", (cx) => this.stateMenu(cx), "f-t"),
+        ...(this.cfg.priorityField ? [k(["p"], "priority", (cx) => this.priorityMenu(cx), "f-p")] : []),
+        k(["o"], "open", (cx) => this.open(s.app_url, cx), "f-o"),
+        k(["y"], "copy key", (cx) => this.copy(`sc-${s.id}`, cx), "f-y"),
+        k(["b"], "copy branch", (cx) => this.copy(this.branchOf(s), cx), "f-b"),
+        ...(pr ? [k(["g"], "github", (cx) => this.openPR(pr, cx), "f-g")] : []),
+        k(["esc"], "back", (cx) => this.escape(cx), "f-esc"),
+      ];
+    }
     if (this.screen !== "list") return [k(["esc"], "back", (cx) => this.escape(cx), "f-esc")];
     const sel = () => this.selected();
     return [
@@ -679,6 +882,92 @@ export default class Shortcut extends View {
       k([","], "settings", (cx) => this.openSettings(cx), "f-set"),
       k(["esc"], "close", (cx) => this.escape(cx), "f-esc"),
     ];
+  }
+
+  // ── drawing: the story ─────────────────────────────────────────────────
+
+  field(o, label, kids) {
+    return h_flex().flex_none().gap(10).items_center().min_h(24)
+      .child(div().flex_none().w(84).text_size(12).text_color(o.dim).child(label))
+      .child(h_flex().flex_1().min_w(0).gap(6).flex_wrap().items_center().children([kids].flat().filter(Boolean)));
+  }
+
+  // Its owners, by count: members are not fetched, so only "you" has a name.
+  owners(s) {
+    const ids = s.owner_ids ?? [];
+    if (!ids.length) return "nobody";
+    const others = ids.length - (ids.includes(this.me?.id) ? 1 : 0);
+    if (others === ids.length) return `${ids.length} owner${ids.length === 1 ? "" : "s"}`;
+    return others ? `you and ${others} other${others === 1 ? "" : "s"}` : "you";
+  }
+
+  // A story's screen: its key and name, its state, the fields, the description, its pull requests and branches.
+  storyView(o) {
+    const s = this.cur;
+    const st = this.stateOf(s);
+    const color = stateColor(o, st?.type);
+    const text = (v) => div().text_color(o.fg).child(String(v));
+    const team = s.group_id == null ? null : (this.ref.groups?.data ?? []).find((g) => g.id === s.group_id);
+    const prio = this.priorityOf(s);
+    const prs = s.pull_requests ?? [];
+    const branches = (s.branches ?? []).filter((b) => b.name);
+    const paras = String(s.description ?? "").split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+    return v_flex().flex_1().min_h(0).gap(10)
+      .child(h_flex().flex_none().gap(10).items_center()
+        .child(chip(o, "state", [icon(stateIcon(st?.type), color, 12), st?.name ?? "unknown state"], { color, click: (cx) => this.stateMenu(cx) }))
+        .child(div().flex_none().font_family(MONO).text_size(12.5).text_color(o.muted).child(`sc-${s.id}`))
+        .child(div().flex_1().min_w(0).truncate().text_size(16).font_semibold().text_color(o.fg).child(s.name ?? "")))
+      .child(v_flex().flex_none().gap(2)
+        .child(this.field(o, "Owners", [icon("person", o.dim, 13), text(this.owners(s))]))
+        .when(Boolean(team), (el) => el.child(this.field(o, "Team", text(team?.name ?? ""))))
+        .when(Boolean(this.epicOf(s)), (el) => el.child(this.field(o, "Epic", chip(o, "epic", [icon("branch", o.dim, 12), this.epicOf(s)?.name ?? ""]))))
+        .when(Boolean(this.iterationOf(s)), (el) => el.child(this.field(o, "Iteration", text(this.iterationOf(s)?.name ?? ""))))
+        .when((s.labels ?? []).length > 0, (el) => el.child(this.field(o, "Labels", (s.labels ?? []).map((l, i) => chip(o, `lb-${i}`, [l.name])))))
+        .when(s.estimate != null, (el) => el.child(this.field(o, "Estimate", text(s.estimate))))
+        .when(Boolean(s.deadline), (el) => el.child(this.field(o, "Deadline", [icon("calendar", o.dim, 13), text(String(s.deadline).slice(0, 10))])))
+        .when(Boolean(this.cfg.priorityField), (el) => el.child(this.field(o, "Priority", prio ? text(prio) : div().text_color(o.dim).child("none"))))
+        .when(Boolean(s.story_type), (el) => el.child(this.field(o, "Type", text(s.story_type)))))
+      .child(div().flex_none().h(1).bg(o.line))
+      .child(v_flex().id("st-body").h(300).min_h(0).flex_shrink(1).overflow_y_scrollbar().pr(6).gap(8)
+        .children(paras.length ? paras.map((p) => div().text_size(13).text_color(o.muted).line_height(1.5).child(p))
+          : [div().text_size(13).text_color(o.dim).child("No description.")]))
+      .when(prs.length > 0, (el) => el.child(v_flex().flex_none().gap(1)
+        .child(div().px(2).pb(2).text_size(10.5).font_semibold().text_color(o.dim).child("Pull requests"))
+        .children(prs.map((p, i) => {
+          const on = i === this.prAt;
+          const tag = p.merged ? ["merged", o.merged] : p.closed ? ["closed", o.fix] : p.draft ? ["draft", o.draft] : null;
+          return h_flex().id(`pr-${i}`).h(28).px(8).gap(8).items_center().rounded(6).cursor_pointer()
+            .when(on, (el) => el.bg(tint(o.accent, 0.18)))
+            .when(!on, (el) => el.hover((h) => h.bg(o.raised)))
+            .on_click(this.guard("pr click", (_e, cx) => {
+              this.prAt = i;
+              this.open(p.url, cx);
+            }))
+            .child(icon("pr", tag ? tag[1] : o.accent, 13))
+            .child(div().flex_none().font_family(MONO).text_size(12).text_color(o.muted).child(`#${p.number}`))
+            .child(div().flex_1().min_w(0).truncate().text_size(12.5).text_color(o.fg).child(p.title ?? ""))
+            .when(Boolean(tag), (el) => el.child(chip(o, `prt-${i}`, [tag[0]], { color: tag[1] })));
+        }))))
+      .when(branches.length > 0, (el) => el.child(this.field(o, "Branches", branches.map((b, i) => chip(o, `br-${i}`, [icon("branch", o.dim, 12), b.name], { mono: true })))))
+      .when(Boolean(s.app_url), (el) => el.child(div().id("app-url").flex_none().truncate().text_size(12).text_color(o.accent).cursor_pointer().hover((h) => h.underline())
+        .on_click(this.guard("app url", (_e, cx) => this.open(s.app_url, cx)))
+        .child(s.app_url ?? "")));
+  }
+
+  menuView(o) {
+    const m = this.menu;
+    const title = { state: `Move sc-${this.cur?.id} to`, priority: `sc-${this.cur?.id}'s priority` }[m.kind] ?? "";
+    return v_flex().flex_none().gap(2).p(10).rounded(10).border_1().border_color(o.line).bg(o.raised).shadow_md()
+      .child(div().px(6).pb(6).text_size(13).font_semibold().text_color(o.fg).child(title))
+      .children(m.items.map((it, i) => {
+        const on = i === m.at;
+        return h_flex().id(`mi-${i}`).h(30).px(8).gap(10).items_center().rounded(6).cursor_pointer()
+          .when(on, (el) => el.bg(tint(o.accent, 0.18)))
+          .when(!on, (el) => el.hover((s) => s.bg(o.sunk)))
+          .on_click(this.guard("menu", (_e, cx) => this.choose(it, cx)))
+          .child(div().flex_none().w(14).font_family(MONO).text_size(11.5).text_color(o.dim).child(String(i + 1)))
+          .child(div().text_size(13).when(on, (el) => el.font_medium()).text_color(on ? o.fg : o.muted).child(it.label));
+      }));
   }
 
   // ── drawing: sign-in ───────────────────────────────────────────────────
@@ -699,13 +988,7 @@ export default class Shortcut extends View {
     const o = tones(t);
     const scr = this.screen;
     this.shown = scr === "list" ? this.shownRows() : [];
-    // The chosen row is always a story: the first at or after it, else the last one.
-    const pickable = (r) => r.story || r.epic;
-    if (scr === "list" && !pickable(this.shown[this.at] ?? {})) {
-      let i = this.shown.findIndex((r, j) => j >= this.at && pickable(r));
-      for (let j = this.shown.length - 1; i < 0 && j >= 0; j--) if (pickable(this.shown[j])) i = j;
-      this.at = Math.max(0, i);
-    }
+    if (scr === "list") this.pick(this.shown);
     const note = this.busy || this.err || this.flash;
     const noteColor = this.busy ? o.accent : this.err ? o.fix : o.muted;
     return v_flex()
@@ -725,6 +1008,8 @@ export default class Shortcut extends View {
           .child(div().flex_none().text_size(12).text_color(o.muted).child("Shortcut")))
         .child(this.tabBar(t, o))
         .child(this.listView(o)))
+      .when(scr === "story" && Boolean(this.cur), (el) => el.child(this.storyView(o)))
+      .when(Boolean(this.menu), (el) => el.child(this.menuView(o)))
       .when(scr === "signIn", (el) => el.child(this.signInView(o)))
       .when(Boolean(note), (el) => el.child(h_flex().flex_none().gap(8).items_center()
         .when(Boolean(this.busy), (el) => el.child(icon("work", o.accent, 12).spin(1100)))
