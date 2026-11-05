@@ -7,13 +7,14 @@ const { default: Shortcut } = await import("../../mods/shortcut/main.js");
 /** A view with this config and these API routes, initialised and (by default) settled. A cache file the test wrote
  *  before calling this is kept (call `reset` in a `beforeEach` to start each test without one). The API answers on a
  *  later turn of the event loop, so with `settle: false` the first render (from the cache) can be looked at. */
-export async function open({ cfg = {}, routes = {}, props = {}, space = null, settle = true } = {}) {
+export async function open({ cfg = {}, routes = {}, props = {}, space = null, settle = true, execGate = null } = {}) {
   const cachePath = `${state.appHome}/data/shortcut-cache.json`;
   const cached = existsSync(cachePath) ? readFileSync(cachePath, "utf8") : null;
   reset();
   if (cached !== null) writeFileSync(cachePath, cached);
   state.props = { overlay: "ov1", ...props };
   if (space) state.spaces.push({ ...space, active: true });
+  state.execGate = execGate;
   if (Object.keys(cfg).length) {
     mkdirSync(`${state.appHome}/data`, { recursive: true });
     writeFileSync(`${state.appHome}/data/shortcut.json`, JSON.stringify(cfg, null, 2));

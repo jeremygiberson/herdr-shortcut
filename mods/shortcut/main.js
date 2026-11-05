@@ -148,17 +148,19 @@ export default class Shortcut extends View {
 
   // ── loading ────────────────────────────────────────────────────────────
 
-  // Settings, then the token, then what was kept from last time (drawn at once), then fresh data.
+  // Settings, then what was kept from last time (drawn at once), then the token (the person's shell can be slow
+  // to start), then fresh data.
   async boot(cx) {
     const s = await loadSettings();
     this.cfg = s.cfg;
     this.raw = s.raw;
     this.cfgError = s.error;
-    this.github = (await readTextFile(`${appHome()}/mods/github/main.js`).catch(() => null)) != null;
-    const { token, error } = await resolveToken(this.cfg);
     this.cache = await readCache();
     for (const k of REF) if (this.cache[k]) this.ref[k] = this.cache[k];
     this.lists = { ...(this.cache.lists ?? {}) };
+    cx.notify();
+    this.github = (await readTextFile(`${appHome()}/mods/github/main.js`).catch(() => null)) != null;
+    const { token, error } = await resolveToken(this.cfg);
     if (error || !token) {
       this.screen = "signIn";
       this.signInNote = error ?? `No API token: $${this.cfg.auth.env} is empty or unset in your login shell.`;

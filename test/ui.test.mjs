@@ -31,6 +31,20 @@ test("the cache renders first, then the refresh replaces it", async () => {
   await cx.settle();
   assert.doesNotMatch(texts(v), /Cached/); assert.match(texts(v), /Alpha/);
 });
+test("the cache is drawn before the shell's token lookup answers", async () => {
+  await writeCache({ member: { at: Date.now(), data: { id: "me", mention_name: "jer" } }, workflows: { at: Date.now(), data: [WF] }, lists: { mine: { at: 0, data: [S(5, "Cached", 11)] } } });
+  let answer;
+  const shell = new Promise((r) => (answer = r));
+  const execGate = (command, args) => (command === "sh" && String(args.at(-1)).includes("SC_SLOW_TOKEN") ? shell : null);
+  const { v, cx, fetch } = await open({ cfg: { auth: { env: "SC_SLOW_TOKEN" } }, routes: basic(), settle: false, execGate });
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(v.client, null); assert.equal(fetch.calls.length, 0);
+  assert.match(texts(v), /Cached/);
+  answer({ code: 0, stdout: "motd<<shortcut-token>>T<<shortcut-token>>", stderr: "" });
+  await cx.settle();
+  assert.equal(fetch.calls.find((c) => c.path === "/stories/search").headers["Shortcut-Token"], "T");
+  assert.doesNotMatch(texts(v), /Cached/); assert.match(texts(v), /Alpha/);
+});
 test("no token shows sign-in naming the variable", async () => {
   const { v } = await open({ cfg: { auth: { env: "SC_UNSET_X" } }, routes: basic() });
   assert.equal(v.screen, "signIn"); assert.match(texts(v), /SC_UNSET_X/);

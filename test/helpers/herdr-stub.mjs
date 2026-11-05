@@ -17,6 +17,8 @@ export const state = {
   closed: 0,
   commands: [],
   known: undefined,
+  // (command, args) → a promise to answer exec with instead of running it, or nothing to run it.
+  execGate: null,
 };
 
 let waiting = null;
@@ -24,7 +26,7 @@ let waits = 0;
 const store = {};
 
 export function reset() {
-  Object.assign(state, { spaces: [], panes: [], props: undefined, runs: [], overlays: [], closed: 0, commands: [], known: undefined });
+  Object.assign(state, { spaces: [], panes: [], props: undefined, runs: [], overlays: [], closed: 0, commands: [], known: undefined, execGate: null });
   waiting = null;
   for (const k of Object.keys(store)) delete store[k];
   for (const d of ["mods", "data"]) {
@@ -55,6 +57,8 @@ export const shared = (k) => store[k];
 export const setShared = (k, v) => { store[k] = v; };
 
 export function exec(command, args = [], options = {}) {
+  const gated = state.execGate?.(command, args);
+  if (gated) return gated;
   return new Promise((resolve, reject) => {
     execFile(command, args, { cwd: options.cwd, encoding: "utf8", maxBuffer: 8 << 20 }, (err, stdout, stderr) => {
       if (err && typeof err.code !== "number") return reject(err);
