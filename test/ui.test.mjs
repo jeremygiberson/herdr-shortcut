@@ -1,7 +1,7 @@
 import "./helpers/setup.mjs";
 import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { open, texts } from "./helpers/view.mjs";
+import { open, press, texts } from "./helpers/view.mjs";
 import { state, reset, pushCommand } from "./helpers/herdr-stub.mjs";
 import { WF, S, basic } from "./helpers/fixtures.mjs";
 const { readCache, writeCache } = await import("../mods/shortcut/api.js");
@@ -86,4 +86,26 @@ test("a command handler that throws shows the error and the next command still w
   assert.match(v.err, /command: boom/); assert.match(texts(v), /boom/); assert.equal(state.closed, 0);
   pushCommand("escape"); await cx.settle();
   assert.equal(state.closed, 1);
+});
+test("Team lists my first group's started stories and offers a chooser when I'm in several", async () => {
+  const routes = { ...basic(), "GET /groups": [{ id: "g1", name: "Eng", member_ids: ["me"], archived: false }, { id: "g2", name: "Data", member_ids: ["me"], archived: false }] };
+  const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" } }, routes });
+  press(v, cx, "2"); await cx.settle();
+  assert.equal(v.tab, "team");
+  assert.deepEqual(fetch.calls.filter((c) => c.path === "/stories/search").at(-1).body, { group_ids: ["g1"], workflow_state_types: ["started"], archived: false });
+  assert.match(texts(v), /Eng/); assert.match(texts(v), /Data/);
+});
+test("Epics drill into an epic's stories and Esc comes back", async () => {
+  const routes = { ...basic(), "GET /epics": [{ id: 3, name: "Big", archived: false, completed: false }] };
+  const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" } }, routes });
+  press(v, cx, "3"); await cx.settle(); assert.match(texts(v), /Big/);
+  v.input.emit("submit"); await cx.settle();
+  assert.deepEqual(fetch.calls.filter((c) => c.path === "/stories/search").at(-1).body, { epic_ids: [3], archived: false });
+  pushCommand("escape"); await cx.settle(); assert.equal(v.drilled, null); assert.equal(state.closed, 0);
+});
+test("Recent shows the settings' recent stories newest first, archived dimmed", async () => {
+  const routes = { ...basic(), "GET /stories/1": S(1, "Alpha", 11), "GET /stories/9": { ...S(9, "Old", 14), archived: true } };
+  const { v, cx } = await open({ cfg: { auth: { token: "T" }, recent: [{ id: 1, at: "2026-11-04T10:00:00Z" }, { id: 9, at: "2026-11-01T10:00:00Z" }] }, routes });
+  press(v, cx, "4"); await cx.settle();
+  assert.deepEqual(v.shownRows().filter((r) => r.story).map((r) => r.story.id), [1, 9]);
 });

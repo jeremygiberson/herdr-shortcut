@@ -49,6 +49,8 @@ export default class Shortcut extends View {
     this.screen = "list";
     this.tab = localStorage.getItem("tab") ?? "mine";
     if (!TABS.some((t) => t.id === this.tab)) this.tab = "mine";
+    this.group = localStorage.getItem("group") ?? null; // the chosen team (a group id)
+    this.drilled = null; // the epic whose stories the Epics tab lists
     this.cfg = normalize(null);
     this.raw = null;
     this.cfgError = null;
@@ -157,7 +159,7 @@ export default class Shortcut extends View {
   refreshAll(cx, { force = false } = {}) {
     if (!this.client || this.refreshing) return;
     this.refreshing = true;
-    const tab = this.tab;
+    const tab = this.listId();
     cx.notify();
     cx.spawn(async (cx) => {
       try {
@@ -192,15 +194,62 @@ export default class Shortcut extends View {
     } catch {}
   }
 
-  // One tab's list, into this.lists and the cache (not written: the caller keeps it).
+  // The shown list's id: the tab's, or the drilled epic's ("epic:3").
+  listId() {
+    return this.tab === "epics" && this.drilled ? `epic:${this.drilled.id}` : this.tab;
+  }
+
+  // The team shown: the chosen group while it still exists, else the first I am in, else the first.
+  teamId() {
+    const all = this.ref.groups?.data ?? [];
+    if (all.some((g) => g.id === this.group)) return this.group;
+    return (this.myGroups()[0] ?? all[0])?.id ?? null;
+  }
+
+  myGroups() {
+    return (this.ref.groups?.data ?? []).filter((g) => (g.member_ids ?? []).includes(this.me?.id));
+  }
+
+  // A story fetched lately by any list, so Recent need not fetch it again.
+  cachedStory(id) {
+    for (const l of Object.values(this.lists)) {
+      if (!fresh(l, REF_MAX) || !Array.isArray(l.data)) continue;
+      const s = l.data.find((x) => x.id === id);
+      if (s) return s;
+    }
+    return null;
+  }
+
+  // One list (a tab's, or "epic:<id>"), into this.lists and the cache (not written: the caller keeps it).
   async load(tab, cx) {
-    if (tab !== "mine") return; // the other tabs come with their own queries
     this.loading.add(tab);
     cx.notify();
     try {
-      const body = { owner_ids: [this.me.id], workflow_state_types: ["unstarted", "started"], archived: false };
-      const { data, cut } = await this.client.searchStories(body, { pages: 10 });
-      this.lists[tab] = (this.cache.lists ??= {})[tab] = { at: Date.now(), data, cut };
+      let list;
+      if (tab === "mine") {
+        const body = { owner_ids: [this.me.id], workflow_state_types: ["unstarted", "started"], archived: false };
+        list = await this.client.searchStories(body, { pages: 10 });
+      } else if (tab === "team") {
+        const group = this.teamId();
+        list = group == null ? { data: [], cut: false }
+          : await this.client.searchStories({ group_ids: [group], workflow_state_types: ["started"], archived: false }, { pages: 4 });
+      } else if (tab === "epics") {
+        list = { data: await this.client.epics() };
+      } else if (tab.startsWith("epic:")) {
+        list = await this.client.searchStories({ epic_ids: [Number(tab.slice(5))], archived: false }, { pages: 4 });
+      } else if (tab === "recent") {
+        const data = [];
+        for (const { id } of this.cfg.recent ?? []) {
+          try {
+            const s = this.cachedStory(id) ?? (await this.client.story(id));
+            if (s) data.push(s);
+          } catch (e) {
+            if (e instanceof ApiError && e.status === 401) throw e;
+          }
+        }
+        list = { data };
+      } else return;
+      this.lists[tab] = (this.cache.lists ??= {})[tab] = { at: Date.now(), ...list };
     } finally {
       this.loading.delete(tab);
       cx.notify();
@@ -277,10 +326,12 @@ export default class Shortcut extends View {
     return hay.includes(f);
   }
 
-  // The shown tab's stories that pass the filter (not the looked-up one).
+  // The shown list's rows that pass the filter (not the looked-up story): epics on the Epics tab, else stories.
   localRows() {
     const f = this.filter.trim().toLowerCase();
-    return (this.lists[this.tab]?.data ?? []).filter((s) => this.matches(s, f));
+    const data = this.lists[this.listId()]?.data ?? [];
+    if (this.listId() === "epics") return data.filter((e) => !f || String(e.name ?? "").toLowerCase().includes(f));
+    return data.filter((s) => this.matches(s, f));
   }
 
   // Stories under a heading per workflow state, in each workflow's state order.
@@ -305,14 +356,20 @@ export default class Shortcut extends View {
     return rows;
   }
 
-  // The rows shown: { header } and { story }. The looked-up story comes first; the workspace's search results
+  // The rows shown: { header }, { story }, { epic } and { title }. The looked-up story comes first; the workspace's search results
   // come last, under their own heading, when nothing here matches.
   shownRows() {
     const q = this.filter.trim();
     const found = this.found && STORY_KEY.test(q) ? this.found : null;
     const local = this.localRows().filter((s) => s.id !== found?.id);
     const rows = found ? [{ story: found }] : [];
-    rows.push(...this.grouped(local));
+    if (this.listId() === "epics") rows.push(...local.map((epic) => ({ epic })));
+    else if (this.tab === "recent") {
+      if (local.length) rows.push({ header: "Recent", type: null }, ...local.map((story) => ({ story })));
+    } else {
+      if (this.drilled && this.tab === "epics") rows.push({ title: `Epic · ${this.drilled.name}` });
+      rows.push(...this.grouped(local));
+    }
     if (!local.length && this.searched?.query === q && this.searched.data.length) {
       rows.push({ header: "Workspace", type: null }, ...this.searched.data.map((story) => ({ story })));
     }
@@ -323,7 +380,7 @@ export default class Shortcut extends View {
   move(d) {
     const rows = this.shown ?? this.shownRows();
     for (let i = this.at + d; i >= 0 && i < rows.length; i += d) {
-      if (rows[i].story) {
+      if (rows[i].story || rows[i].epic) {
         this.at = i;
         return this.follow();
       }
@@ -333,12 +390,16 @@ export default class Shortcut extends View {
   // Keeps the chosen row in sight: the first, with its heading.
   follow() {
     const rows = this.shown ?? [];
-    const first = rows.findIndex((r) => r.story);
+    const first = rows.findIndex((r) => r.story || r.epic);
     this.scroll.scroll_to_item(this.at === first ? 0 : this.at);
   }
 
   selected() {
     return (this.shown ?? this.shownRows())[this.at]?.story ?? null;
+  }
+
+  selectedEpic() {
+    return (this.shown ?? this.shownRows())[this.at]?.epic ?? null;
   }
 
   step(d, cx) {
@@ -348,6 +409,7 @@ export default class Shortcut extends View {
 
   pickTab(id, cx) {
     this.tab = id;
+    this.drilled = null;
     localStorage.setItem("tab", id);
     this.at = 0;
     this.refreshAll(cx);
@@ -356,7 +418,25 @@ export default class Shortcut extends View {
 
   enter(cx) {
     const s = this.selected();
-    if (s) this.openStory(s, cx);
+    if (s) return this.openStory(s, cx);
+    const e = this.selectedEpic();
+    if (e) this.drill(e, cx);
+  }
+
+  // The Epics tab lists an epic's stories (older than a minute, or not yet loaded: fetched).
+  drill(epic, cx) {
+    this.drilled = epic;
+    this.at = 0;
+    this.refreshAll(cx);
+    cx.notify();
+  }
+
+  chooseGroup(id, cx) {
+    this.group = id;
+    localStorage.setItem("group", id);
+    this.at = 0;
+    this.refreshAll(cx, { force: true });
+    cx.notify();
   }
 
   // ── actions (the screens they lead to come in later tasks) ─────────────
@@ -385,6 +465,11 @@ export default class Shortcut extends View {
 
   // On the list: a filter is cleared first (wherever the keyboard is), an empty one closes the popup.
   escape(cx) {
+    if (this.screen === "list" && this.drilled) {
+      this.drilled = null;
+      this.at = 0;
+      return cx.notify();
+    }
     if (this.screen === "list" && this.filter) {
       this.input.set_value("");
       this.filter = "";
@@ -423,7 +508,10 @@ export default class Shortcut extends View {
     else if (k === "up") this.move(-1);
     else if (k === "pagedown") for (let i = 0; i < 12; i++) this.move(1);
     else if (k === "pageup") for (let i = 0; i < 12; i++) this.move(-1);
+    else if (k === "left") this.step(-1, cx);
+    else if (k === "right") this.step(1, cx);
     else if (this.typing) return false;
+    else if (/^[1-4]$/.test(k)) this.pickTab(TABS[Number(k) - 1].id, cx);
     else if (k === "enter") this.enter(cx);
     else if (k === "r") this.refreshAll(cx, { force: true });
     else if (k === "/") this.input.focus();
@@ -456,6 +544,7 @@ export default class Shortcut extends View {
       ...(s.labels ?? []).map((l, i) => chip(o, `lb-${s.id}-${i}`, [l.name])),
       prs > 0 && h_flex().flex_none().gap(4).items_center().child(icon("pr", o.dim, 12)).child(countPill(o, prs, on)),
       prio && chip(o, `pr-${s.id}`, [prio]),
+      s.archived && chip(o, `ar-${s.id}`, ["archived"]),
     ].filter(Boolean);
     return h_flex()
       .id(`st-${s.id}`)
@@ -473,8 +562,37 @@ export default class Shortcut extends View {
       .child(div().flex_none().w(3).h(16).rounded(2).when(on, (el) => el.bg(color)))
       .child(icon(stateIcon(st?.type), color, 14))
       .child(div().flex_none().w(64).font_family(MONO).text_size(11.5).text_color(o.muted).truncate().child(`sc-${s.id}`))
-      .child(div().flex_1().min_w(0).truncate().text_size(13.5).when(on, (el) => el.font_medium()).text_color(o.fg).child(s.name ?? ""))
+      .child(div().flex_1().min_w(0).truncate().text_size(13.5).when(on, (el) => el.font_medium()).text_color(s.archived ? o.dim : o.fg).child(s.name ?? ""))
       .child(h_flex().flex_none().gap(6).items_center().overflow_hidden().children(chips));
+  }
+
+  // An epic's row: its name, and how many of its stories are not done (when the epic says).
+  epicCard(o, e, on) {
+    const open = e.stats ? (e.stats.num_stories_unstarted ?? 0) + (e.stats.num_stories_started ?? 0) : null;
+    return h_flex()
+      .id(`ep-${e.id}`)
+      .flex_none()
+      .h(34)
+      .pl(10)
+      .pr(12)
+      .gap(10)
+      .items_center()
+      .rounded(7)
+      .when(on, (el) => el.bg(o.raised).shadow_sm())
+      .when(!on, (el) => el.hover((el) => el.bg(o.raised)))
+      .cursor_pointer()
+      .child(icon("branch", on ? o.accent : o.dim, 14))
+      .child(div().flex_1().min_w(0).truncate().text_size(13.5).when(on, (el) => el.font_medium()).text_color(o.fg).child(e.name ?? ""))
+      .when(open !== null, (el) => el.child(countPill(o, open, on)));
+  }
+
+  // On the Team tab, when I am in several groups: a chip per group, the chosen one lit.
+  groupChooser(o) {
+    const mine = this.myGroups();
+    if (this.tab !== "team" || mine.length < 2) return null;
+    const chosen = this.teamId();
+    return h_flex().flex_none().gap(6).items_center().flex_wrap().children(mine.map((g) =>
+      chip(o, `grp-${g.id}`, [g.name], { color: g.id === chosen ? o.accent : null, click: this.guard("group", (cx) => this.chooseGroup(g.id, cx)) })));
   }
 
   heading(o, label, color, n) {
@@ -505,23 +623,28 @@ export default class Shortcut extends View {
 
   listView(o) {
     const rows = this.shown;
-    const l = this.lists[this.tab];
+    const l = this.lists[this.listId()];
     const notes = [];
-    if (!rows.some((r) => r.story) && !this.err) {
-      notes.push(this.note(o, !l ? "Loading…"
+    if (!rows.some((r) => r.story || r.epic) && !this.err) {
+      notes.push(this.note(o, this.tab === "team" && l && this.teamId() == null ? "You are in no team."
+        : !l ? "Loading…"
         : this.filter ? "Nothing matches. A story's key (sc-1234, #1234 or 1234) looks in the whole workspace."
         : this.tab === "mine" ? "No unstarted or started stories of yours." : "Nothing here yet."));
     }
     const entries = rows.map((r, i) => {
+      if (r.title) return { key: `t-${i}`, h: HEADING_H, el: () => this.heading(o, r.title, o.fg, rows.slice(i + 1).filter((x) => x.story).length) };
       if (r.header) {
         let n = 0;
         for (let j = i + 1; j < rows.length && rows[j].story; j++) n++;
         return { key: `h-${i}-${r.header}`, h: HEADING_H, el: () => this.heading(o, r.header, r.type ? stateColor(o, r.type) : null, n) };
       }
+      if (r.epic) return { key: `e-${i}-${r.epic.id}`, row: i, h: ROW_H, el: () => div().h(ROW_H).pb(2).child(this.epicCard(o, r.epic, i === this.at)) };
       return { key: `r-${i}-${r.story.id}`, row: i, h: ROW_H, el: () => div().h(ROW_H).pb(2).child(this.storyCard(o, r.story, i === this.at)) };
     });
     const more = l?.cut ? div().px(14).py(6).text_size(11.5).text_color(o.dim).child(`more… only the first ${l.data.length} are shown; the filter narrows them.`) : null;
+    const chooser = this.groupChooser(o);
     return v_flex().flex_1().min_h(0).gap(2)
+      .when(Boolean(chooser), (el) => el.child(chooser))
       .children(notes)
       .when(entries.length > 0, (el) => el.child(
         div().relative().h(Math.min(LIST_H, entries.reduce((h, e) => h + e.h, 0))).min_h(0).flex_shrink(1)
@@ -578,9 +701,10 @@ export default class Shortcut extends View {
     const scr = this.screen;
     this.shown = scr === "list" ? this.shownRows() : [];
     // The chosen row is always a story: the first at or after it, else the last one.
-    if (scr === "list" && !this.shown[this.at]?.story) {
-      let i = this.shown.findIndex((r, j) => j >= this.at && r.story);
-      for (let j = this.shown.length - 1; i < 0 && j >= 0; j--) if (this.shown[j].story) i = j;
+    const pickable = (r) => r.story || r.epic;
+    if (scr === "list" && !pickable(this.shown[this.at] ?? {})) {
+      let i = this.shown.findIndex((r, j) => j >= this.at && pickable(r));
+      for (let j = this.shown.length - 1; i < 0 && j >= 0; j--) if (pickable(this.shown[j])) i = j;
       this.at = Math.max(0, i);
     }
     const note = this.busy || this.err || this.flash;
