@@ -4,10 +4,11 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
-import { theme, props, closeOverlay, openOverlay, nextCommand, appHome, readTextFile } from "herdr";
-import { load as loadSettings, resolveToken, normalize, storyVars, DEFAULTS } from "./config.js";
+import { theme, props, closeOverlay, openOverlay, nextCommand, appHome, readTextFile, spaces, panes, exec } from "herdr";
+import { load as loadSettings, save as saveSettings, resolveToken, normalize, storyVars, expand, DEFAULTS } from "./config.js";
 import { createClient, ApiError, readCache, writeCache, fresh } from "./api.js";
-import { branchCandidates } from "./start.js";
+import { startDecision, branchCandidates, repoHints } from "./start.js";
+import { buildLaunchRequest, backTo, openLauncher } from "./launch.js";
 import { tones, tint, icon, chip, key, countPill, stateIcon, stateColor, MONO } from "./look.js";
 
 const TABS = [
@@ -73,7 +74,9 @@ export default class Shortcut extends View {
     this.searchSeq = 0;
     this.at = 0;
     this.cur = null;
-    this.menu = null; // { kind: "state"|"priority"|"branch"|"launcher", items: [{ label, value }], at }
+    this.menu = null; // { kind: "state"|"priority"|"pickState"|"branch"|"launcher", items: [{ label, value }], at }
+    this.pick = null; // a start waiting on pickState: { story, workflow, resume, from }
+    this.branching = null; // a start waiting on the branch menu: { story, resume }
     this.prAt = -1; // the story screen's highlighted pull request (-1: none)
     this.github = false; // the github mod is installed: a story's pull requests open there
     this.typing = false;
@@ -411,7 +414,7 @@ export default class Shortcut extends View {
   }
 
   // The chosen row is always a story (or an epic): the first at or after it, else the last one.
-  pick(rows) {
+  pickRow(rows) {
     const pickable = (r) => r.story || r.epic;
     if (pickable(rows[this.at] ?? {})) return;
     let i = rows.findIndex((r, j) => j >= this.at && pickable(r));
@@ -442,7 +445,7 @@ export default class Shortcut extends View {
   }
 
   enter(cx) {
-    this.pick(this.shown ?? this.shownRows());
+    this.pickRow(this.shown ?? this.shownRows());
     const s = this.selected();
     if (s) return this.openStory(s, cx);
     const e = this.selectedEpic();
@@ -532,10 +535,19 @@ export default class Shortcut extends View {
     const m = this.menu;
     this.menu = null;
     const s = this.cur;
-    if (m && item && s) {
+    if (m?.kind === "pickState" && item && this.pick) {
+      const p = this.pick;
+      this.pick = null;
+      this.screen = p.from;
+      p.resume(item.value, cx);
+    } else if (m?.kind === "branch" && item && this.branching) {
+      const b = this.branching;
+      this.branching = null;
+      b.resume(item.value, cx);
+    } else if (m && item && s) {
       if (m.kind === "state" && item.value !== s.workflow_state_id) this.update(s, { workflow_state_id: item.value }, `Moved sc-${s.id} to ${item.label}`, cx);
       else if (m.kind === "priority") this.update(s, { custom_fields: this.withPriority(s, item.value) }, `sc-${s.id}'s priority: ${item.label}`, cx);
-      // "branch" (Task 9) and "launcher" (Task 11) menus are chosen here too.
+      // The "launcher" menu (Task 11) is chosen here too.
     }
     cx.notify();
   }
@@ -600,9 +612,114 @@ export default class Shortcut extends View {
     cx.notify();
   }
 
-  // ── actions (the screens they lead to come in later tasks) ─────────────
+  // ── starting a story (spec 8.1) ────────────────────────────────────────
+  // The rules live in start.js and launch.js; this runs them in order. A start pauses on pickState or the branch
+  // menu (its task ends there) and goes on in a new task when one is chosen; Esc on either cancels it.
 
-  startStory(_story, _cx) {}
+  startStory(story, cx) {
+    if (!story || !this.client || this.busy || this.pick || this.branching) return;
+    this.startTask(story.id, cx, async (cx) => this.decide(await this.client.story(story.id), cx));
+  }
+
+  // One stage of a start in its own task, with the busy line while it runs; whatever it throws is shown.
+  startTask(id, cx, stage) {
+    this.busy = `Starting sc-${id}…`;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        await stage(cx);
+        this.busy = "";
+      } catch (e) {
+        this.busy = "";
+        this.say(String(e?.message ?? e), cx, true);
+      }
+      cx.notify();
+    });
+  }
+
+  // Steps 3 to 5: refused, ask for the workflow's start state, or update the story; then the branch.
+  async decide(story, cx) {
+    const workflow = this.workflowOf(story);
+    if (!workflow) return this.say(`sc-${story.id}: its workflow is not loaded yet.`, cx, true);
+    const d = startDecision({ story, workflow, me: this.me, cfg: this.cfg, iterations: this.ref.iterations?.data ?? [] });
+    if (d.refused) return this.say(d.refused, cx, true);
+    if (d.askState) {
+      if (d.dropStale) {
+        delete this.cfg.startStates[String(workflow.id)];
+        this.raw = await saveSettings(this.cfg, this.raw);
+      }
+      return this.askStartState(story, workflow, cx);
+    }
+    if (d.patch) {
+      try {
+        story = await this.client.updateStory(story.id, d.patch);
+      } catch (e) {
+        if (e instanceof ApiError) return this.say(e.message, cx, true);
+        throw e;
+      }
+      this.replaceStory(story);
+      await this.keep();
+    }
+    return this.chooseBranch(story, d.notes, cx);
+  }
+
+  // pickState: the workflow's states that are not done; the one chosen is kept and the start goes on from step 3.
+  askStartState(story, workflow, cx) {
+    const states = [...(workflow.states ?? [])].filter((x) => x.type !== "done").sort(byPosition);
+    this.pick = {
+      story, workflow, from: this.screen,
+      resume: (stateId, cx) => this.startTask(story.id, cx, async (cx) => {
+        this.cfg.startStates[String(workflow.id)] = stateId;
+        this.raw = await saveSettings(this.cfg, this.raw);
+        await this.decide(story, cx);
+      }),
+    };
+    this.screen = "pickState";
+    this.menu = { kind: "pickState", items: states.map((x) => ({ label: x.name, value: x.id })), at: 0 };
+    this.focus.focus?.();
+    cx.notify();
+  }
+
+  // Step 6: one candidate goes straight on; several are asked about in the branch menu.
+  chooseBranch(story, notes, cx) {
+    const { candidates, checkout } = branchCandidates(story, this.cfg, storyVars(story, this.me));
+    if (candidates.length === 1) return this.launch(story, candidates[0], checkout, notes, cx);
+    this.branching = { story, resume: (branch, cx) => this.startTask(story.id, cx, (cx) => this.launch(story, branch, checkout, notes, cx)) };
+    this.menu = { kind: "branch", items: candidates.map((c) => ({ label: c, value: c })), at: 0 };
+    this.focus.focus?.();
+    cx.notify();
+  }
+
+  // Steps 6 (the prompt) to 8: a valid branch, recent, the launcher, then the popup closes.
+  async launch(story, branch, checkout, notes, cx) {
+    const ok = await exec("git", ["check-ref-format", "--branch", branch]);
+    if (ok.code !== 0) return this.say(`"${branch}" is not a valid branch name: check the branch template in settings`, cx, true);
+    const prompt = expand(this.cfg.startPrompt, storyVars(story, this.me, branch));
+    this.cfg.recent = [{ id: story.id, at: new Date().toISOString() }, ...(this.cfg.recent ?? []).filter((r) => r.id !== story.id)].slice(0, 30);
+    this.raw = await saveSettings(this.cfg, this.raw);
+    const r = await openLauncher({
+      cfg: this.cfg,
+      launch: buildLaunchRequest({ story, branch, checkout, prompt, hints: repoHints(story) }),
+      back: backTo(story),
+      space: spaces().find((s) => s.active) ?? null,
+      panes: panes(),
+      exec, openOverlay, readTextFile,
+    });
+    if (r.error) return this.say(r.error, cx, true);
+    const said = [...notes, r.note].filter(Boolean).join(" · ");
+    if (said) this.say(said, cx);
+    if (r.note == null) return this.dismiss();
+    cx.timer.after(1500, () => this.dismiss());
+  }
+
+  // Esc on pickState or the branch menu: the start stops there, nothing more is written.
+  cancelStart(cx) {
+    if (this.pick) this.screen = this.pick.from;
+    this.menu = this.pick = this.branching = null;
+    this.say("Start cancelled", cx);
+  }
+
+  // ── actions (the screens they lead to come in later tasks) ─────────────
 
   create(_cx) {}
 
@@ -626,6 +743,7 @@ export default class Shortcut extends View {
 
   // On the list: a filter is cleared first (wherever the keyboard is), an empty one closes the popup.
   escape(cx) {
+    if (this.menu?.kind === "pickState" || this.menu?.kind === "branch") return this.cancelStart(cx);
     if (this.menu) {
       this.menu = null;
       return cx.notify();
@@ -659,6 +777,7 @@ export default class Shortcut extends View {
     const k = chord(e);
     let handled = true;
     if (k === "escape") this.escape(cx);
+    else if (this.menu && (this.screen === "list" || this.screen === "pickState")) handled = this.menuKey(k, cx);
     else if (this.screen === "list") handled = this.listKey(k, cx);
     else if (this.screen === "story") handled = this.storyKey(k, cx);
     else if (this.screen === "signIn") handled = this.signInKey(k, cx);
@@ -670,6 +789,8 @@ export default class Shortcut extends View {
 
   // Arrows always move; letters act only when the filter doesn't have the keyboard.
   listKey(k, cx) {
+    // The highlighted row as drawn: before the first draw it may still be a heading.
+    this.pickRow(this.shown ?? this.shownRows());
     const s = this.selected();
     if (k === "down") this.move(1);
     else if (k === "up") this.move(-1);
@@ -968,9 +1089,13 @@ export default class Shortcut extends View {
 
   menuView(o) {
     const m = this.menu;
-    const title = { state: `Move sc-${this.cur?.id} to`, priority: `sc-${this.cur?.id}'s priority` }[m.kind] ?? "";
+    const title = {
+      state: `Move sc-${this.cur?.id} to`,
+      priority: `sc-${this.cur?.id}'s priority`,
+      branch: `Which branch for sc-${this.branching?.story.id}?`,
+    }[m.kind] ?? "";
     return v_flex().flex_none().gap(2).p(10).rounded(10).border_1().border_color(o.line).bg(o.raised).shadow_md()
-      .child(div().px(6).pb(6).text_size(13).font_semibold().text_color(o.fg).child(title))
+      .when(Boolean(title), (el) => el.child(div().px(6).pb(6).text_size(13).font_semibold().text_color(o.fg).child(title)))
       .children(m.items.map((it, i) => {
         const on = i === m.at;
         return h_flex().id(`mi-${i}`).h(30).px(8).gap(10).items_center().rounded(6).cursor_pointer()
@@ -980,6 +1105,16 @@ export default class Shortcut extends View {
           .child(div().flex_none().w(14).font_family(MONO).text_size(11.5).text_color(o.dim).child(String(i + 1)))
           .child(div().text_size(13).when(on, (el) => el.font_medium()).text_color(on ? o.fg : o.muted).child(it.label));
       }));
+  }
+
+  // The start's question about a workflow with no start state, and its states as a menu.
+  pickStateView(o) {
+    const { story, workflow } = this.pick;
+    return v_flex().flex_none().gap(12).px(14).py(14)
+      .child(div().text_size(15).font_semibold().text_color(o.fg).child(`Start sc-${story.id}`))
+      .child(div().text_size(13).text_color(o.muted).line_height(1.5)
+        .child(`sc-${story.id} is in the ${workflow.name} workflow, which has no start state yet. Pick one:`))
+      .child(this.menuView(o));
   }
 
   // ── drawing: sign-in ───────────────────────────────────────────────────
@@ -1000,7 +1135,7 @@ export default class Shortcut extends View {
     const o = tones(t);
     const scr = this.screen;
     this.shown = scr === "list" ? this.shownRows() : [];
-    if (scr === "list") this.pick(this.shown);
+    if (scr === "list") this.pickRow(this.shown);
     const note = this.busy || this.err || this.flash;
     const noteColor = this.busy ? o.accent : this.err ? o.fix : o.muted;
     return v_flex()
@@ -1021,7 +1156,8 @@ export default class Shortcut extends View {
         .child(this.tabBar(t, o))
         .child(this.listView(o)))
       .when(scr === "story" && Boolean(this.cur), (el) => el.child(this.storyView(o)))
-      .when(Boolean(this.menu), (el) => el.child(this.menuView(o)))
+      .when(scr === "pickState" && Boolean(this.pick && this.menu), (el) => el.child(this.pickStateView(o)))
+      .when(scr !== "pickState" && Boolean(this.menu), (el) => el.child(this.menuView(o)))
       .when(scr === "signIn", (el) => el.child(this.signInView(o)))
       .when(Boolean(note), (el) => el.child(h_flex().flex_none().gap(8).items_center()
         .when(Boolean(this.busy), (el) => el.child(icon("work", o.accent, 12).spin(1100)))

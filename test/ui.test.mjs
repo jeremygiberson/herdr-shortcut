@@ -4,7 +4,10 @@ import assert from "node:assert/strict";
 import { open, press, texts } from "./helpers/view.mjs";
 import { state, reset, pushCommand } from "./helpers/herdr-stub.mjs";
 import { WF, S, basic } from "./helpers/fixtures.mjs";
+import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { makeRepo, sh } from "./helpers/repo.mjs";
 const { readCache, writeCache } = await import("../mods/shortcut/api.js");
+const { dataPath } = await import("../mods/shortcut/config.js");
 
 // Each test starts on Mine: the tab chosen is kept in localStorage, which outlives a test.
 beforeEach(() => { reset(); localStorage.clear(); });
@@ -193,4 +196,68 @@ test("Esc with a menu open closes only the menu", async () => {
   press(v, cx, "t"); assert.notEqual(v.menu, null);
   pushCommand("escape"); await cx.settle();
   assert.equal(v.menu, null); assert.equal(v.screen, "story"); assert.equal(state.closed, 0);
+});
+test("start: updates Shortcut, records recent, opens the configured mod launcher, closes", async () => {
+  const iter = [{ id: 99, name: "It 9", status: "started", group_ids: ["g"] }];
+  const routes = { ...basic(), "GET /iterations": iter, "GET /stories/1": { ...S(1, "Alpha", 11), owner_ids: ["other"], group_id: "g" }, "PUT /stories/1": (b) => ({ ...S(1, "Alpha", b.workflow_state_id), owner_ids: b.owner_ids }) };
+  const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 }, launcher: { kind: "mod", name: "projects" } }, routes });
+  // After open: open() resets the app home, mods/ included. The launcher is looked for only when the start runs.
+  mkdirSync(`${state.appHome}/mods/projects`, { recursive: true }); writeFileSync(`${state.appHome}/mods/projects/main.js`, "");
+  press(v, cx, "s"); await cx.settle();
+  assert.deepEqual(fetch.calls.find((c) => c.method === "PUT").body, { workflow_state_id: 12, owner_ids: ["other", "me"], iteration_id: 99 });
+  const o = state.overlays.at(-1);
+  assert.equal(o.mod, "projects");
+  assert.deepEqual(o.props.launch, { v: 1, branch: "jer/sc-1/alpha", checkout: "new", name: "sc-1 · Alpha", prompt: "Read the shortcut story sc-1 for context, then suggest how to proceed.", source: { kind: "shortcut", id: "sc-1", url: "https://app.shortcut.com/w/story/1", title: "Alpha" }, repo: { names: [], urls: [], folder: null } });
+  assert.deepEqual(o.props.backTo, { mod: "shortcut", props: { screen: "story", id: 1 } });
+  assert.equal(JSON.parse(readFileSync(dataPath(), "utf8")).recent[0].id, 1);
+  assert.equal(state.closed, 1);
+});
+test("start: a workflow without a start state asks, persists, and continues", async () => {
+  const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" } }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11), "PUT /stories/1": (b) => S(1, "Alpha", b.workflow_state_id) }, space: { id: "s", folder: makeRepo(), tabs: [] } });
+  press(v, cx, "s"); await cx.settle();
+  assert.equal(v.screen, "pickState"); assert.match(texts(v), /Eng workflow, which has no start state yet/);
+  assert.deepEqual(v.menu.items.map((i) => i.label), ["Backlog", "Ready", "In Dev", "In Review"]);
+  press(v, cx, "down"); press(v, cx, "down"); press(v, cx, "enter"); await cx.settle();
+  assert.deepEqual(JSON.parse(readFileSync(dataPath(), "utf8")).startStates, { 1: 12 });
+  assert.deepEqual(fetch.calls.find((c) => c.method === "PUT").body, { workflow_state_id: 12 });
+  assert.equal(state.overlays.at(-1).mod, "worktree");
+});
+test("a stale start state opens pickState and is dropped", async () => {
+  const { v, cx } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 999 } }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11) } });
+  press(v, cx, "s"); await cx.settle();
+  assert.equal(v.screen, "pickState");
+  pushCommand("escape"); await cx.settle();
+  assert.equal(v.screen, "list"); assert.deepEqual(JSON.parse(readFileSync(dataPath(), "utf8")).startStates, {});
+});
+test("start: done is refused; a Shortcut error stops before the launcher", async () => {
+  const { v, cx } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 } }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 14) } });
+  press(v, cx, "s"); await cx.settle();
+  assert.equal(v.err, "sc-1 is done. Follow-up work belongs in a new story."); assert.equal(state.overlays.length, 0);
+  const bad = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 } }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11), "PUT /stories/1": { status: 422, body: { message: "Nope" } } } });
+  press(bad.v, bad.cx, "s"); await bad.cx.settle();
+  assert.equal(bad.v.err, "Nope"); assert.equal(state.overlays.length, 0);
+});
+test("start: several open PR branches ask which, and reuse it as existing", async () => {
+  const prs = [{ branch_name: "a", merged: false, closed: false, url: "https://github.com/o/api/pull/1" }, { branch_name: "b", merged: false, closed: false, url: "https://github.com/o/api/pull/2" }];
+  const repo = makeRepo(); sh(repo, "branch", "b");
+  const { v, cx } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 } }, routes: { ...basic(), "GET /stories/2": { ...S(2, "Beta", 12), pull_requests: prs } }, space: { id: "s", folder: repo, tabs: [] } });
+  v.at = v.shownRows().findIndex((r) => r.story?.id === 2); press(v, cx, "s"); await cx.settle();
+  assert.equal(v.menu.kind, "branch"); press(v, cx, "down"); press(v, cx, "enter"); await cx.settle();
+  assert.deepEqual(state.overlays.at(-1).props, { folder: repo, machine: null, branch: "b", space: "s" });
+});
+test("start: an invalid branch from the template is refused before any launcher", async () => {
+  const { v, cx } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 }, branchTemplate: "{mention}/..{slug}" }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11), "PUT /stories/1": (b) => S(1, "Alpha", b.workflow_state_id) } });
+  press(v, cx, "s"); await cx.settle();
+  assert.match(v.err, /is not a valid branch name/); assert.equal(state.overlays.length, 0);
+});
+test("start: Esc on the branch menu cancels with nothing written and no launcher", async () => {
+  const prs = [{ branch_name: "a", merged: false, closed: false }, { branch_name: "b", merged: false, closed: false }];
+  const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" }, startStates: { 1: 12 } }, routes: { ...basic(), "GET /stories/1": { ...S(1, "Alpha", 11), pull_requests: prs }, "PUT /stories/1": (b) => ({ ...S(1, "Alpha", b.workflow_state_id), pull_requests: prs }) } });
+  press(v, cx, "s"); await cx.settle();
+  assert.equal(v.menu.kind, "branch");
+  const puts = fetch.calls.filter((c) => c.method === "PUT").length;
+  pushCommand("escape"); await cx.settle();
+  assert.equal(v.menu, null); assert.equal(v.flash, "Start cancelled"); assert.equal(v.busy, "");
+  assert.equal(fetch.calls.filter((c) => c.method === "PUT").length, puts); assert.equal(state.overlays.length, 0); assert.equal(state.closed, 0);
+  assert.equal(JSON.parse(readFileSync(dataPath(), "utf8")).recent, undefined);
 });
