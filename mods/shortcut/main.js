@@ -199,11 +199,10 @@ export default class Shortcut extends View {
     return this.tab === "epics" && this.drilled ? `epic:${this.drilled.id}` : this.tab;
   }
 
-  // The team shown: the chosen group while it still exists, else the first I am in, else the first.
+  // The team shown: the chosen group while I am still in it, else the first I am in, else none.
   teamId() {
-    const all = this.ref.groups?.data ?? [];
-    if (all.some((g) => g.id === this.group)) return this.group;
-    return (this.myGroups()[0] ?? all[0])?.id ?? null;
+    const mine = this.myGroups();
+    return (mine.find((g) => g.id === this.group) ?? mine[0])?.id ?? null;
   }
 
   myGroups() {
@@ -212,9 +211,9 @@ export default class Shortcut extends View {
 
   // A story fetched lately by any list, so Recent need not fetch it again.
   cachedStory(id) {
-    for (const l of Object.values(this.lists)) {
-      if (!fresh(l, REF_MAX) || !Array.isArray(l.data)) continue;
-      const s = l.data.find((x) => x.id === id);
+    for (const [name, l] of Object.entries(this.lists)) {
+      if (name === "epics" || name === "recent" || !fresh(l, REF_MAX) || !Array.isArray(l.data)) continue;
+      const s = l.data.find((x) => x.id === id && x.workflow_state_id != null);
       if (s) return s;
     }
     return null;

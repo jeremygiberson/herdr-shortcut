@@ -109,3 +109,39 @@ test("Recent shows the settings' recent stories newest first, archived dimmed", 
   press(v, cx, "4"); await cx.settle();
   assert.deepEqual(v.shownRows().filter((r) => r.story).map((r) => r.story.id), [1, 9]);
 });
+const G = (id, name, members = ["me"]) => ({ id, name, member_ids: members, archived: false });
+test("Team with a single group shows no chooser", async () => {
+  const { v, cx } = await open({ cfg: { auth: { token: "T" } }, routes: { ...basic(), "GET /groups": [G("g1", "Eng"), G("g2", "Other", ["x"])] } });
+  press(v, cx, "2"); await cx.settle();
+  assert.doesNotMatch(texts(v), /Other/);
+});
+test("in no group the Team tab says so and does not search", async () => {
+  const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" } }, routes: { ...basic(), "GET /groups": [G("g2", "Other", ["x"])] } });
+  const before = fetch.calls.filter((c) => c.path === "/stories/search").length;
+  press(v, cx, "2"); await cx.settle();
+  assert.match(texts(v), /You are in no team\./);
+  assert.equal(fetch.calls.filter((c) => c.path === "/stories/search").length, before);
+});
+test("Recent draws an archived story with an archived chip and skips ids that fail", async () => {
+  const routes = { ...basic(), "GET /stories/9": { ...S(9, "Old", 14), archived: true }, "GET /stories/5": S(5, "Fine", 11) };
+  const { v, cx } = await open({ cfg: { auth: { token: "T" }, recent: [{ id: 9, at: "a" }, { id: 7, at: "b" }, { id: 5, at: "c" }] }, routes });
+  press(v, cx, "4"); await cx.settle();
+  assert.deepEqual(v.shownRows().filter((r) => r.story).map((r) => r.story.id), [9, 5]);
+  assert.match(texts(v), /archived/);
+});
+test("Recent never resolves a story id to an epic with the same id", async () => {
+  const routes = { ...basic(), "GET /epics": [{ id: 1, name: "EpicOne", archived: false, completed: false }], "GET /stories/1": S(1, "StoryOne", 11) };
+  const { v, cx } = await open({ cfg: { auth: { token: "T" }, recent: [{ id: 1, at: "a" }] }, routes });
+  press(v, cx, "3"); await cx.settle();
+  press(v, cx, "4"); await cx.settle();
+  assert.deepEqual(v.shownRows().filter((r) => r.story).map((r) => r.story.name), ["StoryOne"]);
+});
+test("a drilled epic is titled and Esc leaves the filter alone", async () => {
+  const routes = { ...basic(), "GET /epics": [{ id: 3, name: "Big", archived: false, completed: false }] };
+  const { v, cx } = await open({ cfg: { auth: { token: "T" } }, routes });
+  press(v, cx, "3"); await cx.settle();
+  v.input.set_value("big"); v.input.emit("submit"); await cx.settle();
+  assert.match(texts(v), /Epic · Big/);
+  pushCommand("escape"); await cx.settle();
+  assert.equal(v.drilled, null); assert.equal(v.filter, "big");
+});
