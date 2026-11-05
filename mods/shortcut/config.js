@@ -76,14 +76,20 @@ export async function save(cfg, raw) {
   return text;
 }
 
-/** The API token: the pasted one, else the named environment variable read through a login shell. */
+const FENCE = "<<shortcut-token>>";
+
+/** The API token: the pasted one, else the named environment variable read through the person's shell. */
 export async function resolveToken(cfg) {
   if (cfg.auth.token) return { token: String(cfg.auth.token).trim(), error: null };
   const name = cfg.auth.env;
   // The name is not echoed: a token pasted in its place would be shown.
   if (!ENV_NAME.test(name)) return { token: "", error: "Not an environment variable name" };
-  const r = await exec("sh", ["-lc", 'printf %s "$' + name + '"']);
-  return { token: String(r.stdout ?? "").trim(), error: null };
+  // The person's own shell, interactive and login, so a token exported in .zshrc is found (`sh -lc` reads only
+  // .profile, and the app's environment has neither). Its startup files may print, so the value is fenced.
+  const line = `printf '${FENCE}%s${FENCE}' "$${name}"`;
+  const r = await exec("sh", ["-c", 'exec "${SHELL:-sh}" -ilc "$1"', "sh", line]);
+  const parts = String(r.stdout ?? "").split(FENCE);
+  return { token: parts.length >= 3 ? parts[parts.length - 2].trim() : "", error: null };
 }
 
 /** Lowercase, dash-separated, at most 48 characters, never ending in a dash. */

@@ -1,7 +1,9 @@
 import "./helpers/setup.mjs";
 import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync, statSync } from "node:fs";
+import { writeFileSync, statSync, mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { reset } from "./helpers/herdr-stub.mjs";
 const { normalize, load, save, dataPath, resolveToken, slug, storyVars, expand } = await import("../mods/shortcut/config.js");
 
@@ -55,6 +57,27 @@ test("resolveToken trims, prefers the pasted token, validates the env name", asy
   assert.deepEqual(await resolveToken(normalize({ auth: { env: "SC_TEST_TOKEN" } })), { token: "fromenv", error: null });
   assert.deepEqual(await resolveToken(normalize({ auth: { env: "SC_UNSET_X" } })), { token: "", error: null });
   assert.equal((await resolveToken({ auth: { env: "bad name; rm" } })).error, "Not an environment variable name");
+});
+test("resolveToken reads the variable through $SHELL -ilc and ignores what its startup prints", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "sc-shell-"));
+  const fake = join(dir, "fake-shell");
+  // A shell whose startup files are noisy and which alone defines the variable, as .zshrc would.
+  writeFileSync(fake, [
+    "#!/bin/sh",
+    'echo "welcome banner"',
+    '[ "$1" = "-ilc" ] || exit 9',
+    'SC_ONLY_IN_RC=fromrc sh -c "$2"',
+    'echo "bye"',
+    "",
+  ].join("\n"), { mode: 0o755 });
+  const before = process.env.SHELL;
+  process.env.SHELL = fake;
+  try {
+    assert.deepEqual(await resolveToken(normalize({ auth: { env: "SC_ONLY_IN_RC" } })), { token: "fromrc", error: null });
+    assert.deepEqual(await resolveToken(normalize({ auth: { env: "SC_UNSET_X" } })), { token: "", error: null });
+  } finally {
+    process.env.SHELL = before;
+  }
 });
 test("slug and templates", () => {
   assert.equal(slug("Fix the Thing!! (v2)"), "fix-the-thing-v2");
