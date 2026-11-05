@@ -45,7 +45,7 @@ export function normalize(raw) {
     priorityField: nonEmpty(r.priorityField) ? r.priorityField : null,
     launcher,
     recent: Array.isArray(r.recent)
-      ? r.recent.filter((e) => e && typeof e.id === "number").slice(0, 30)
+      ? r.recent.filter((e) => e && Number.isFinite(e.id)).slice(0, 30)
       : [],
   };
 }
@@ -57,7 +57,9 @@ export async function load() {
   try {
     return { cfg: normalize(JSON.parse(raw)), raw, error: null };
   } catch (e) {
-    return { cfg: normalize(null), raw, error: `data/shortcut.json is not valid JSON: ${e.message}` };
+    // The parser's message can quote file text (and the file may hold the token), so only a position is kept.
+    const pos = /position \d+/.exec(String(e.message))?.[0];
+    return { cfg: normalize(null), raw, error: `data/shortcut.json is not valid JSON: ${pos ?? "check the file"}` };
   }
 }
 
@@ -65,7 +67,10 @@ export async function load() {
 export async function save(cfg, raw) {
   const text = JSON.stringify(cfg, null, 2) + "\n";
   await writeTextFile(dataPath(), text, raw);
-  if (cfg.auth && cfg.auth.token) await exec("chmod", ["600", dataPath()]);
+  if (cfg.auth && cfg.auth.token) {
+    const r = await exec("chmod", ["600", dataPath()]);
+    if (r.code !== 0) throw new Error("could not restrict data/shortcut.json to mode 600");
+  }
   return text;
 }
 
@@ -99,5 +104,5 @@ export function storyVars(story, me, branch = "") {
 
 /** Replace {word} with vars[word]; unknown words stay as typed. */
 export function expand(template, vars) {
-  return String(template).replace(/\{(\w+)\}/g, (m, w) => (w in vars ? String(vars[w]) : m));
+  return String(template).replace(/\{(\w+)\}/g, (m, w) => (Object.hasOwn(vars, w) ? String(vars[w]) : m));
 }

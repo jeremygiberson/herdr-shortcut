@@ -34,6 +34,12 @@ test("load tolerates a missing or broken file", async () => {
   writeFileSync(dataPath(), "{nope");
   const r = await load(); assert.match(r.error, /^data\/shortcut\.json is not valid JSON:/); assert.equal(r.cfg.iteration, "current-if-unset");
 });
+test("load errors never quote the file contents", async () => {
+  writeFileSync(dataPath(), '{"auth":{"token":"LEAKME9999"} x');
+  const r = await load();
+  assert.match(r.error, /not valid JSON/);
+  assert.equal(r.error.includes("LEAKME9999"), false);
+});
 test("save writes the file and chmods it when a token is kept", async () => {
   const raw = await save(normalize({ auth: { token: "abc" } }), null);
   assert.equal((statSync(dataPath()).mode & 0o777), 0o600);
@@ -54,4 +60,5 @@ test("slug and templates", () => {
   assert.equal(slug("a".repeat(47) + " b"), "a".repeat(47));
   const vars = storyVars({ id: 12, name: "Fix it", app_url: "https://x/story/12" }, { mention_name: "jer" }, "jer/sc-12/fix-it");
   assert.equal(expand("{mention}/sc-{id}/{slug} {number} {url} {branch} {nope}", vars), "jer/sc-sc-12/fix-it 12 https://x/story/12 jer/sc-12/fix-it {nope}");
+  assert.equal(expand("{constructor}", vars), "{constructor}");
 });
