@@ -127,6 +127,15 @@ test("Recent shows the settings' recent stories newest first, archived dimmed", 
   press(v, cx, "4"); await cx.settle();
   assert.deepEqual(v.shownRows().filter((r) => r.story).map((r) => r.story.id), [1, 9]);
 });
+test("a tab switched while the first refresh runs is loaded once it ends", async () => {
+  const routes = { ...basic(), "GET /groups": [{ id: "g1", name: "Eng", member_ids: ["me"], archived: false }] };
+  const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" } }, routes, settle: false });
+  assert.equal(v.refreshing, true);
+  press(v, cx, "2"); await cx.settle();
+  assert.equal(v.tab, "team"); assert.equal(v.refreshing, false);
+  assert.deepEqual(fetch.calls.filter((c) => c.path === "/stories/search").at(-1).body, { group_ids: ["g1"], workflow_state_types: ["started"], archived: false });
+  assert.doesNotMatch(texts(v), /Loading/);
+});
 const G = (id, name, members = ["me"]) => ({ id, name, member_ids: members, archived: false });
 test("Team with a single group shows no chooser", async () => {
   const { v, cx } = await open({ cfg: { auth: { token: "T" } }, routes: { ...basic(), "GET /groups": [G("g1", "Eng"), G("g2", "Other", ["x"])] } });

@@ -70,6 +70,7 @@ export default class Shortcut extends View {
     this.lists = {};
     this.loading = new Set();
     this.refreshing = false;
+    this.refreshAgain = null; // { force }: a refresh asked for while one was running
     this.signInNote = "";
     this.filter = "";
     this.found = null; // the story whose key is in the filter
@@ -184,9 +185,14 @@ export default class Shortcut extends View {
   }
 
   // Reference data older than 10 minutes and the shown tab's list older than a minute (everything, when forced),
-  // in one task; the cache is written once at the end.
+  // in one task; the cache is written once at the end. One asked for while another runs (a tab switched, say) runs
+  // once that one ends.
   refreshAll(cx, { force = false } = {}) {
-    if (!this.client || this.refreshing) return;
+    if (!this.client) return;
+    if (this.refreshing) {
+      this.refreshAgain = { force: force || Boolean(this.refreshAgain?.force) };
+      return;
+    }
     this.refreshing = true;
     const tab = this.listId();
     cx.notify();
@@ -213,6 +219,9 @@ export default class Shortcut extends View {
       await this.keep();
       this.refreshing = false;
       cx.notify();
+      const again = this.refreshAgain;
+      this.refreshAgain = null;
+      if (again && this.screen !== "signIn") this.refreshAll(cx, again);
     });
   }
 
