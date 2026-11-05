@@ -74,7 +74,8 @@ export default class Shortcut extends View {
     this.searchSeq = 0;
     this.at = 0;
     this.cur = null;
-    this.menu = null; // { kind: "state"|"priority"|"pickState"|"branch"|"launcher", items: [{ label, value }], at }
+    this.menu = null; // { kind: "state"|"priority"|"pickState"|"branch"|"startState"|"cfgPriority"|"launcher", items: [{ label, value }], at }
+    this.saveSeq = 0; // the settings' debounced save: only the last one scheduled runs
     this.pick = null; // a start waiting on pickState: { story, workflow, resume, from }
     this.branching = null; // a start waiting on the branch menu: { story, resume }
     this.prAt = -1; // the story screen's highlighted pull request (-1: none)
@@ -114,6 +115,7 @@ export default class Shortcut extends View {
           if (c === "escape") this.escape(cx);
           else if ((c === "tab" || c === "backtab") && this.screen === "list") this.step(c === "tab" ? 1 : -1, cx);
           else if ((c === "tab" || c === "backtab") && this.screen === "create") this.nextField(cx);
+          else if ((c === "tab" || c === "backtab") && this.screen === "settings" && !this.menu) this.settingsField(c === "tab" ? 1 : -1, cx);
           cx.notify();
         } catch (e) {
           this.fail("command", e);
@@ -545,10 +547,19 @@ export default class Shortcut extends View {
       const b = this.branching;
       this.branching = null;
       b.resume(item.value, cx);
+    } else if (m?.kind === "startState" && item) {
+      if (item.value == null) delete this.cfg.startStates[String(m.wf)];
+      else this.cfg.startStates[String(m.wf)] = item.value;
+      this.scheduleSave(cx);
+    } else if (m?.kind === "cfgPriority" && item) {
+      this.cfg.priorityField = item.value;
+      this.scheduleSave(cx);
+    } else if (m?.kind === "launcher" && item) {
+      this.cfg.launcher = item.value;
+      this.scheduleSave(cx);
     } else if (m && item && s) {
       if (m.kind === "state" && item.value !== s.workflow_state_id) this.update(s, { workflow_state_id: item.value }, `Moved sc-${s.id} to ${item.label}`, cx);
       else if (m.kind === "priority") this.update(s, { custom_fields: this.withPriority(s, item.value) }, `sc-${s.id}'s priority: ${item.label}`, cx);
-      // The "launcher" menu (Task 11) is chosen here too.
     }
     cx.notify();
   }
@@ -843,7 +854,269 @@ export default class Shortcut extends View {
     cx.notify();
   }
 
-  openSettings(_cx) {}
+  // ── settings ───────────────────────────────────────────────────────────
+  // Rows edited in place; every change is saved 300 ms after the last one. A pasted token stays in its box until it
+  // is saved, then only "••••" and its last four characters are drawn. The token is never said, logged or cached.
+
+  openSettings(cx) {
+    if (this.screen === "settings") return;
+    this.from = this.screen === "story" || this.screen === "signIn" ? this.screen : "list";
+    this.screen = "settings";
+    this.menu = null;
+    this.err = this.flash = "";
+    this.authMode = this.cfg.auth.token ? "token" : "env";
+    this.authDirty = false;
+    this.setAt = 0;
+    // Each box is filled before its change handler is set, so filling it is not a change.
+    this.envInput = InputState.new({ placeholder: "SHORTCUT_API_TOKEN" });
+    this.envInput.set_value(this.cfg.auth.env ?? DEFAULTS.auth.env);
+    this.envInput.on("change", () => {
+      this.cfg.auth = { env: this.envInput.value().trim() };
+      this.authDirty = true;
+      this.scheduleSave(this.cx);
+    });
+    this.envInput.on("submit", () => this.saveNow());
+    this.tokenInput = InputState.new({ placeholder: "Paste a token" });
+    this.tokenInput.on("change", () => {
+      const v = this.tokenInput.value().trim();
+      if (!v) return;
+      this.authMode = "token";
+      this.cfg.auth = { token: v };
+      this.authDirty = true;
+      this.scheduleSave(this.cx);
+    });
+    this.promptBox = TextareaState.new({ rows: 3 });
+    this.promptBox.set_value(this.cfg.startPrompt);
+    this.promptBox.on("change", () => {
+      this.cfg.startPrompt = this.promptBox.value();
+      this.scheduleSave(this.cx);
+    });
+    this.branchInput = InputState.new({ placeholder: DEFAULTS.branchTemplate });
+    this.branchInput.set_value(this.cfg.branchTemplate);
+    this.branchInput.on("change", () => {
+      this.cfg.branchTemplate = this.branchInput.value();
+      this.scheduleSave(this.cx);
+    });
+    this.focus.focus?.();
+    cx.notify();
+  }
+
+  // The text boxes Tab moves between: the shown auth box, the prompt and the branch template.
+  settingInputs() {
+    const auth = this.authMode === "env" ? this.envInput : this.cfg.auth.token && !this.tokenInput.value() ? null : this.tokenInput;
+    return [auth, this.promptBox, this.branchInput].filter(Boolean);
+  }
+
+  settingsField(d, cx) {
+    const all = this.settingInputs();
+    this.setAt = (this.setAt + d + all.length) % all.length;
+    all[this.setAt].focus();
+    cx.notify();
+  }
+
+  settingsKey(k, cx) {
+    if (this.menu) return this.menuKey(k, cx);
+    if (k === "tab" || k === "shift-tab") this.settingsField(k === "tab" ? 1 : -1, cx);
+    else return false;
+    return true;
+  }
+
+  // The radio: "Environment variable" drops a pasted token; "Token" shows the paste box (saved once pasted).
+  pickAuth(mode, cx) {
+    if (mode === this.authMode) return;
+    this.authMode = mode;
+    if (mode === "env") {
+      this.cfg.auth = { env: this.envInput.value().trim() || DEFAULTS.auth.env };
+      this.authDirty = true;
+      this.scheduleSave(cx);
+    }
+    cx.notify();
+  }
+
+  clearToken(cx) {
+    this.cfg.auth = { env: DEFAULTS.auth.env };
+    this.tokenInput.set_value("");
+    this.authDirty = true;
+    this.scheduleSave(cx);
+  }
+
+  // GET /member with the token as configured now; on success the popup uses that client from here on.
+  testToken(cx) {
+    cx.spawn(async (cx) => {
+      try {
+        const { token, error } = await resolveToken(this.cfg);
+        if (error || !token) return this.say(error ?? `No API token: $${this.cfg.auth.env} is empty or unset in your login shell.`, cx, true);
+        const client = createClient({ token });
+        const me = await client.me();
+        this.client = client;
+        this.authDirty = false;
+        this.ref.member = { at: Date.now(), data: me };
+        this.say(`Signed in as ${me?.name ?? me?.mention_name ?? "?"}`, cx);
+      } catch (e) {
+        this.say(String(e?.message ?? e), cx, true);
+      }
+    });
+  }
+
+  // A workflow's start state: the placeholder (unset) and its states that are not done.
+  openStateMenu(wfId, cx) {
+    const wf = (this.ref.workflows?.data ?? []).find((w) => w.id === wfId);
+    if (!wf) return;
+    const states = [...(wf.states ?? [])].filter((x) => x.type !== "done").sort(byPosition);
+    const items = [{ label: "Please select a start state", value: null }, ...states.map((x) => ({ label: x.name, value: x.id }))];
+    const cur = this.cfg.startStates[String(wfId)];
+    this.menu = { kind: "startState", wf: wfId, items, at: Math.max(0, items.findIndex((i) => i.value != null && i.value === cur)) };
+    cx.notify();
+  }
+
+  // Enabled custom fields with at least one value, after "None".
+  openPriorityMenu(cx) {
+    const fields = (this.ref.customFields?.data ?? []).filter((f) => f.enabled !== false && (f.values ?? []).length > 0);
+    const items = [{ label: "None", value: null }, ...fields.map((f) => ({ label: f.name, value: f.id }))];
+    this.menu = { kind: "cfgPriority", items, at: Math.max(0, items.findIndex((i) => i.value === this.cfg.priorityField)) };
+    cx.notify();
+  }
+
+  // The shipped dialog, then each folder under mods/ that has a main.js (and the chosen mod, when it is not there).
+  openLauncherMenu(cx) {
+    cx.spawn(async (cx) => {
+      const dir = `${appHome()}/mods`;
+      const names = [];
+      try {
+        const r = await exec("ls", [dir]);
+        if (r.code === 0) {
+          for (const n of String(r.stdout ?? "").split("\n").map((x) => x.trim()).filter(Boolean)) {
+            if ((await readTextFile(`${dir}/${n}/main.js`).catch(() => null)) != null) names.push(n);
+          }
+        }
+      } catch {}
+      names.sort();
+      const cur = this.cfg.launcher;
+      if (cur.kind === "mod" && !names.includes(cur.name)) names.push(cur.name);
+      const items = [{ label: "Shipped worktree dialog", value: { kind: "shipped" } }, ...names.map((n) => ({ label: `Mod: ${n}`, value: { kind: "mod", name: n } }))];
+      const at = items.findIndex((i) => i.value.kind === cur.kind && i.value.name === cur.name);
+      this.menu = { kind: "launcher", items, at: Math.max(0, at) };
+      cx.notify();
+    });
+  }
+
+  // Only the last change in 300 ms is saved.
+  scheduleSave(cx) {
+    const seq = ++this.saveSeq;
+    this.cx.timer.after(300, () => seq === this.saveSeq && this.cx.spawn(() => this.saveNow()));
+    cx.notify();
+  }
+
+  // Saves run one after another (each writes against the text the last one wrote).
+  saveNow() {
+    this.saveSeq++;
+    this.saving = (this.saving ?? Promise.resolve()).then(async () => {
+      try {
+        this.cfg = normalize(this.cfg);
+        this.raw = await saveSettings(this.cfg, this.raw);
+        if (this.cfg.auth.token && this.tokenInput?.value()) this.tokenInput.set_value("");
+        this.say("Saved", this.cx);
+      } catch (e) {
+        this.say(String(e?.message ?? e), this.cx, true);
+      }
+    });
+    return this.saving;
+  }
+
+  // Esc: back where it was opened from. A changed token (or none yet) is looked up again and the data refreshed.
+  leaveSettings(cx) {
+    this.menu = null;
+    this.err = this.flash = "";
+    this.focus.focus?.();
+    if (this.client && !this.authDirty) {
+      if (this.from === "signIn") {
+        this.screen = "list";
+        this.refreshAll(cx);
+      } else this.screen = this.from === "story" && this.cur ? "story" : "list";
+      return cx.notify();
+    }
+    cx.spawn(async (cx) => {
+      try {
+        await this.saving;
+        const { token, error } = await resolveToken(this.cfg);
+        this.authDirty = false;
+        if (error || !token) {
+          this.client = null;
+          this.screen = "signIn";
+          this.signInNote = error ?? `No API token: $${this.cfg.auth.env} is empty or unset in your login shell.`;
+          return cx.notify();
+        }
+        this.client = createClient({ token });
+        this.screen = this.from === "story" && this.cur ? "story" : "list";
+        this.refreshAll(cx, { force: true });
+      } catch (e) {
+        this.fail("settings", e);
+      }
+      cx.notify();
+    });
+  }
+
+  // One row: its label, its value (elements), and a hint under the value.
+  settingRow(o, label, value, hint) {
+    return h_flex().flex_none().gap(12).items_start().py(4)
+      .child(div().flex_none().w(110).pt(4).text_size(12).font_medium().text_color(o.muted).child(label))
+      .child(v_flex().flex_1().min_w(0).gap(4)
+        .children([value].flat().filter(Boolean))
+        .when(Boolean(hint), (el) => el.child(div().text_size(11.5).text_color(o.dim).line_height(1.4).child(hint))));
+  }
+
+  settingsView(o) {
+    const c = this.cfg;
+    const box = (el) => div().flex_none().px(10).py(6).rounded(8).border_1().border_color(o.line).bg(o.sunk).child(el);
+    const lit = (on) => (on ? o.accent : null);
+    const pick = (id, label, on, fn) => chip(o, id, [label], { color: lit(on), click: this.guard(id, (cx) => fn(cx)) });
+    const row = (...kids) => h_flex().flex_none().gap(6).items_center().flex_wrap().children(kids.filter(Boolean));
+    const token = c.auth.token ? String(c.auth.token) : "";
+    const masked = token && !this.tokenInput.value();
+    const authValue = [
+      row(pick("au-env", "Environment variable", this.authMode === "env", (cx) => this.pickAuth("env", cx)),
+        pick("au-tok", "Token", this.authMode === "token", (cx) => this.pickAuth("token", cx)),
+        chip(o, "au-test", ["Test"], { click: this.guard("test", (cx) => this.testToken(cx)) })),
+      this.authMode === "env" ? box(Input.new(this.envInput).w_full().font_family(MONO).text_size(12.5).text_color(o.fg))
+        : masked ? row(div().font_family(MONO).text_size(12.5).text_color(o.fg).child(`••••${token.slice(-4)}`),
+          chip(o, "au-clear", ["Clear"], { click: this.guard("clear", (cx) => this.clearToken(cx)) }))
+        : box(Input.new(this.tokenInput).w_full().font_family(MONO).text_size(12.5).text_color(o.fg)),
+    ];
+    const authHint = this.authMode === "env" ? "Read from your login shell when the popup opens."
+      : "Kept in data/shortcut.json, readable only by you.";
+    const preview = expand(c.branchTemplate, storyVars({ id: 1234, name: "Sample story", app_url: "" }, this.me));
+    const workflows = this.ref.workflows?.data ?? [];
+    const stateRows = workflows.map((w) => {
+      const st = (w.states ?? []).find((x) => x.id === c.startStates[String(w.id)]);
+      return row(div().flex_none().w(140).truncate().text_size(12.5).text_color(o.fg).child(w.name ?? `Workflow ${w.id}`),
+        chip(o, `ss-${w.id}`, [st ? st.name : "Please select a start state"], { color: st ? null : o.fix, click: this.guard("start state", (cx) => this.openStateMenu(w.id, cx)) }));
+    });
+    const field = (this.ref.customFields?.data ?? []).find((f) => f.id === c.priorityField);
+    const launcher = c.launcher.kind === "mod" ? `Mod: ${c.launcher.name}` : "Shipped worktree dialog";
+    return v_flex().id("settings").flex_1().min_h(0).overflow_y_scrollbar().gap(6).pr(6)
+      .child(div().text_size(15).font_semibold().text_color(o.fg).child("Settings"))
+      .when(Boolean(this.cfgError), (el) => el.child(div().text_size(12.5).text_color(o.fix).child(this.cfgError)))
+      .child(this.settingRow(o, "Auth", authValue, authHint))
+      .child(this.settingRow(o, "Start prompt", box(Textarea.new(this.promptBox).w_full().text_size(12.5).text_color(o.fg)),
+        "{id} {number} {slug} {title} {url} {mention} {branch}"))
+      .child(this.settingRow(o, "Branch name", [box(Input.new(this.branchInput).w_full().font_family(MONO).text_size(12.5).text_color(o.fg)),
+        row(div().text_size(11.5).text_color(o.dim).child("Preview:"), div().font_family(MONO).text_size(12).text_color(o.fg).child(preview))],
+        "{id} {number} {slug} {title} {url} {mention}"))
+      .child(this.settingRow(o, "Start states", stateRows.length ? stateRows : div().text_size(12.5).text_color(o.dim).child("Workflows are not loaded yet."),
+        "The state a story moves to when you start it, per workflow."))
+      .child(this.settingRow(o, "Iteration", row(
+        pick("it-cur", "Set to the current iteration if the story has none", c.iteration === "current-if-unset", (cx) => this.setOption("iteration", "current-if-unset", cx)),
+        pick("it-never", "Never touch the iteration", c.iteration === "never", (cx) => this.setOption("iteration", "never", cx))), null))
+      .child(this.settingRow(o, "Priority field", chip(o, "prio", [field ? field.name : "None"], { click: this.guard("priority", (cx) => this.openPriorityMenu(cx)) }),
+        "Its values show on the rows, and p sets them on a story."))
+      .child(this.settingRow(o, "Launcher", chip(o, "launcher", [launcher], { click: this.guard("launcher", (cx) => this.openLauncherMenu(cx)) }),
+        "What opens the worktree when a story starts."));
+  }
+
+  setOption(key, value, cx) {
+    this.cfg[key] = value;
+    this.scheduleSave(cx);
+  }
 
   open(url, cx) {
     if (url) cx.open_url(url);
@@ -870,6 +1143,7 @@ export default class Shortcut extends View {
     }
     if (this.screen === "story") return this.back(cx);
     if (this.screen === "create") return this.leaveCreate(cx);
+    if (this.screen === "settings") return this.leaveSettings(cx);
     if (this.screen === "list" && this.drilled) {
       this.drilled = null;
       this.at = 0;
@@ -903,6 +1177,7 @@ export default class Shortcut extends View {
     else if (this.screen === "story") handled = this.storyKey(k, cx);
     else if (this.screen === "signIn") handled = this.signInKey(k, cx);
     else if (this.screen === "create") handled = this.createKey(k, cx);
+    else if (this.screen === "settings") handled = this.settingsKey(k, cx);
     else handled = false;
     if (!handled) return;
     cx.stop_propagation();
@@ -1127,6 +1402,9 @@ export default class Shortcut extends View {
     if (this.screen === "create") {
       return [k(["ctrl", "enter"], "create", (cx) => this.submit(cx), "f-go"), k(["tab"], "next field", (cx) => this.nextField(cx), "f-tab"), k(["esc"], "back", (cx) => this.escape(cx), "f-esc")];
     }
+    if (this.screen === "settings") {
+      return [k(["tab"], "next field", (cx) => this.settingsField(1, cx), "f-tab"), k(["esc"], "back", (cx) => this.escape(cx), "f-esc")];
+    }
     if (this.screen !== "list") return [k(["esc"], "back", (cx) => this.escape(cx), "f-esc")];
     const sel = () => this.selected();
     return [
@@ -1253,6 +1531,9 @@ export default class Shortcut extends View {
       state: `Move sc-${this.cur?.id} to`,
       priority: `sc-${this.cur?.id}'s priority`,
       branch: `Which branch for sc-${this.branching?.story.id}?`,
+      startState: `Start state for ${(this.ref.workflows?.data ?? []).find((w) => w.id === m.wf)?.name ?? "the workflow"}`,
+      cfgPriority: "Priority field",
+      launcher: "Launcher",
     }[m.kind] ?? "";
     return v_flex().flex_none().gap(2).p(10).rounded(10).border_1().border_color(o.line).bg(o.raised).shadow_md()
       .when(Boolean(title), (el) => el.child(div().px(6).pb(6).text_size(13).font_semibold().text_color(o.fg).child(title)))
@@ -1320,6 +1601,7 @@ export default class Shortcut extends View {
       .when(scr === "pickState" && Boolean(this.pick && this.menu), (el) => el.child(this.pickStateView(o)))
       .when(scr !== "pickState" && Boolean(this.menu), (el) => el.child(this.menuView(o)))
       .when(scr === "signIn", (el) => el.child(this.signInView(o)))
+      .when(scr === "settings" && Boolean(this.envInput), (el) => el.child(this.settingsView(o)))
       .when(Boolean(note), (el) => el.child(h_flex().flex_none().gap(8).items_center()
         .when(Boolean(this.busy), (el) => el.child(icon("work", o.accent, 12).spin(1100)))
         .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(noteColor).child(note))))

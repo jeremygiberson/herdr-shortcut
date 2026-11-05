@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { open, press, texts } from "./helpers/view.mjs";
 import { state, reset, pushCommand } from "./helpers/herdr-stub.mjs";
 import { WF, S, basic } from "./helpers/fixtures.mjs";
-import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, statSync } from "node:fs";
 import { makeRepo, sh } from "./helpers/repo.mjs";
 const { readCache, writeCache } = await import("../mods/shortcut/api.js");
 const { dataPath } = await import("../mods/shortcut/config.js");
@@ -315,4 +315,44 @@ test("an empty name does not submit", async () => {
   const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" } }, routes: basic() });
   press(v, cx, "n"); press(v, cx, "enter", { control: true }); await cx.settle();
   assert.equal(fetch.calls.some((c) => c.method === "POST" && c.path === "/stories"), false); assert.match(v.err, /name/i);
+});
+
+test("settings: token masked, env name editable, Test shows the member", async () => {
+  const { v, cx } = await open({ cfg: { auth: { token: "abcdef1234" } }, routes: basic() });
+  press(v, cx, ","); assert.equal(v.screen, "settings");
+  assert.match(texts(v), /••••1234/); assert.doesNotMatch(texts(v), /abcdef1234/);
+  v.testToken(cx); await cx.settle(); assert.match(v.flash, /Jer/);
+});
+test("settings: start states per workflow with the placeholder, saved on change", async () => {
+  const { v, cx } = await open({ cfg: { auth: { token: "T" } }, routes: basic() });
+  press(v, cx, ","); assert.match(texts(v), /Eng[\s\S]*Please select a start state/);
+  v.openStateMenu(1, cx); assert.deepEqual(v.menu.items.map((i) => i.label), ["Please select a start state", "Backlog", "Ready", "In Dev", "In Review"]);
+  press(v, cx, "down"); press(v, cx, "down"); press(v, cx, "down"); press(v, cx, "enter"); cx.fire(300); await cx.settle();
+  assert.deepEqual(JSON.parse(readFileSync(dataPath(), "utf8")).startStates, { 1: 12 });
+});
+test("settings: the launcher menu lists installed mods and the shipped dialog", async () => {
+  const { v, cx } = await open({ cfg: { auth: { token: "T" } }, routes: basic() });
+  // After open: open() resets the app home, mods/ included.
+  mkdirSync(`${state.appHome}/mods/projects`, { recursive: true }); writeFileSync(`${state.appHome}/mods/projects/main.js`, "");
+  mkdirSync(`${state.appHome}/mods/empty`, { recursive: true });
+  press(v, cx, ","); v.openLauncherMenu(cx); await cx.settle();
+  assert.deepEqual(v.menu.items.map((i) => i.label), ["Shipped worktree dialog", "Mod: projects"]);
+  press(v, cx, "down"); press(v, cx, "enter"); cx.fire(300); await cx.settle();
+  assert.deepEqual(JSON.parse(readFileSync(dataPath(), "utf8")).launcher, { kind: "mod", name: "projects" });
+});
+test("settings: branch template preview and priority field", async () => {
+  const fields = [{ id: "f1", name: "Priority", enabled: true, values: [{ id: "v1", value: "High", enabled: true }] }, { id: "f2", name: "Empty", enabled: true, values: [] }];
+  const { v, cx } = await open({ cfg: { auth: { token: "T" } }, routes: { ...basic(), "GET /custom-fields": fields } });
+  press(v, cx, ","); assert.match(texts(v), /jer\/sc-1234\/sample-story/);
+  v.openPriorityMenu(cx); assert.deepEqual(v.menu.items.map((i) => i.label), ["None", "Priority"]);
+});
+test("settings: a pasted token is saved with mode 600, then masked, and never shown or said", async () => {
+  const { v, cx } = await open({ cfg: { auth: { env: "SC_UNSET_X" } }, routes: basic() });
+  assert.equal(v.screen, "signIn");
+  press(v, cx, ","); assert.equal(v.screen, "settings");
+  v.tokenInput.set_value("newtok9999"); v.tokenInput.emit("change"); cx.fire(300); await cx.settle();
+  assert.equal(JSON.parse(readFileSync(dataPath(), "utf8")).auth.token, "newtok9999");
+  assert.equal(statSync(dataPath()).mode & 0o777, 0o600);
+  assert.match(texts(v), /••••9999/);
+  for (const s of [texts(v), v.flash, v.err]) assert.doesNotMatch(s, /newtok9999/);
 });
