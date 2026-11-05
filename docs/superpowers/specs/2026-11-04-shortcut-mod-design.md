@@ -126,13 +126,13 @@ All screens are one `View` with `this.screen` ∈ `list | story | create | setti
 - *Auth*: radio "Environment variable" (text: name, default `SHORTCUT_API_TOKEN`) / "Token" (paste box). "Test" calls `GET /member` and shows the member's name or the error.
 - *Start prompt*: textarea, the variables listed under it.
 - *Branch name*: text, the variables listed under it, a live preview for a sample story.
-- *Start state per workflow*: one row per workflow from the API, a dropdown of that workflow's states (excluding `done`), first option "Please select a start state". Unset rows are marked.
+- *Start state per workflow*: one row per workflow from the API, a dropdown of that workflow's `unstarted` and `started` states only (never `backlog`, never `done`), in position order, first option "Please select a start state". Unset rows are marked.
 - *Iteration*: "Set to the current iteration if the story has none" / "Never touch the iteration".
 - *Priority field*: dropdown of enabled custom fields that have values, first option "None". Choosing one makes priority chips and the `p` menu appear.
 - *Launcher*: dropdown: "Shipped worktree dialog" and one "Mod: ‹name›" per folder under `${appHome()}/mods` whose `main.js` exists (listed with `exec("ls", [dir])`; no error if the list fails, the current value is still shown and a free-text fallback is offered). The chosen mod is not validated beyond existing; the contract is trusted.
 Settings save on every change (debounced 300 ms) and show "Saved" or the write error.
 
-**pickState.** A dialog-like screen inside the popup: "sc-1234 is in the ‹workflow› workflow, which has no start state yet. Pick one:" followed by the workflow's non-done states. Enter persists the choice into `startStates` and resumes the start. Esc cancels the start.
+**pickState.** A dialog-like screen inside the popup: "sc-1234 is in the ‹workflow› workflow, which has no start state yet. Pick one:" followed by the workflow's `unstarted` and `started` states only, in position order, with the first `started` state highlighted. Enter persists the choice into `startStates` and resumes the start. Esc cancels the start.
 
 **signIn.** Shown when no token resolves or the API says 401: explains the two ways to provide a token and has a button to open settings.
 
@@ -188,7 +188,7 @@ where `space` is the selected space's id and `folder` is that space's working fo
 2. `GET /stories/{id}` fresh, so the update is built from current data.
 3. Find `startStates[story.workflow_id]`. Missing → pickState; on Enter persist and continue; Esc aborts.
 4. Build the update:
-   - `workflow_state_id`: the configured start state, only when the story's current state is of type `backlog` or `unstarted`. A story already in a `started` state keeps its state, and the start notes say "state kept: ‹name›". A story in a `done` state is **refused**: the story screen shows "sc-1234 is done. Follow-up work belongs in a new story." and no update or launch happens. (A "create follow-up story" action is a possible later addition.)
+   - `workflow_state_id`: the configured start state, only when the story's current state is of type `backlog` or `unstarted` and the start state's `position` is after the current state's (never to a state at an earlier position, and no change when it is the same state); otherwise the state is kept and the start notes say "state kept: ‹name›". A story already in a `started` state keeps its state, and the start notes say "state kept: ‹name›". A story in a `done` state is **refused**: the story screen shows "sc-1234 is done. Follow-up work belongs in a new story." and no update or launch happens. (A "create follow-up story" action is a possible later addition.)
    - `owner_ids`: `story.owner_ids` plus my id, only if I am not already in it. Order preserved, me appended.
    - `iteration_id`: only when `iteration === "current-if-unset"`, `story.iteration_id` is null, and exactly one iteration has `status: "started"` and (if the story has a `group_id`) lists that group in `group_ids`, or has no groups at all. Zero or several candidates → leave the iteration alone and show "iteration not set: ‹reason›" in the start notes; never guess.
 5. If the update is non-empty, `PUT /stories/{id}`. On error: show it on the story screen, stop.
@@ -257,7 +257,7 @@ Tests in `herdr-projects/test`: launch request parsing, project resolution by fo
 - Default global key `cmd-alt-s`.
 - Default token source is the `SHORTCUT_API_TOKEN` environment variable (it exists in your shell today); a pasted token is stored in `data/shortcut.json` with mode 0600.
 - Default branch template `{mention}/sc-{number}/{slug}` (`{id}` already reads `sc-1234`) since this workspace returns no `formatted_vcs_branch_name`.
-- Start never moves a story backwards: the state changes only from backlog/unstarted states, and done stories are refused (your decision).
+- Start never moves a story backwards: the state changes only from backlog/unstarted states, never to a state at an earlier position; the start state is applied only when its position is after the current state's. Done stories are refused (your decision).
 - On resume, an open PR's branch wins over a story branch, which wins over the template; several candidates ask (your decision).
 - Iteration is set only when exactly one started iteration fits the story's team; otherwise it is left alone and said so.
 - The projects launch entry shows the launch screen prefilled and waits for Enter rather than launching at once.

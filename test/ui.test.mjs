@@ -219,8 +219,10 @@ test("start: a workflow without a start state asks, persists, and continues", as
   const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" } }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11), "PUT /stories/1": (b) => S(1, "Alpha", b.workflow_state_id) }, space: { id: "s", folder: makeRepo(), tabs: [] } });
   press(v, cx, "s"); await cx.settle();
   assert.equal(v.screen, "pickState"); assert.match(texts(v), /Eng workflow, which has no start state yet/);
-  assert.deepEqual(v.menu.items.map((i) => i.label), ["Backlog", "Ready", "In Dev", "In Review"]);
-  press(v, cx, "down"); press(v, cx, "down"); press(v, cx, "enter"); await cx.settle();
+  // Unstarted and started states only, the first started one highlighted.
+  assert.deepEqual(v.menu.items.map((i) => i.label), ["Ready", "In Dev", "In Review"]);
+  assert.equal(v.menu.at, v.menu.items.findIndex((i) => i.label === "In Dev"));
+  press(v, cx, "down"); press(v, cx, "up"); press(v, cx, "enter"); await cx.settle();
   assert.deepEqual(JSON.parse(readFileSync(dataPath(), "utf8")).startStates, { 1: 12 });
   assert.deepEqual(fetch.calls.find((c) => c.method === "PUT").body, { workflow_state_id: 12 });
   assert.equal(state.overlays.at(-1).mod, "worktree");
@@ -326,8 +328,8 @@ test("settings: token masked, env name editable, Test shows the member", async (
 test("settings: start states per workflow with the placeholder, saved on change", async () => {
   const { v, cx } = await open({ cfg: { auth: { token: "T" } }, routes: basic() });
   press(v, cx, ","); assert.match(texts(v), /Eng[\s\S]*Please select a start state/);
-  v.openStateMenu(1, cx); assert.deepEqual(v.menu.items.map((i) => i.label), ["Please select a start state", "Backlog", "Ready", "In Dev", "In Review"]);
-  press(v, cx, "down"); press(v, cx, "down"); press(v, cx, "down"); press(v, cx, "enter"); cx.fire(300); await cx.settle();
+  v.openStateMenu(1, cx); assert.deepEqual(v.menu.items.map((i) => i.label), ["Please select a start state", "Ready", "In Dev", "In Review"]);
+  press(v, cx, "down"); press(v, cx, "down"); press(v, cx, "enter"); cx.fire(300); await cx.settle();
   assert.deepEqual(JSON.parse(readFileSync(dataPath(), "utf8")).startStates, { 1: 12 });
 });
 test("settings: the launcher menu lists installed mods and the shipped dialog", async () => {

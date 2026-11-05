@@ -37,6 +37,9 @@ const PR_URL = /^https?:\/\/([^/]+)\/([^/]+\/[^/]+)\/pull\/(\d+)/;
 
 const byPosition = (a, b) => (a.position ?? 0) - (b.position ?? 0);
 
+// The states a start may move a story to: unstarted and started ones (never backlog, never done), in position order.
+const startable = (workflow) => [...(workflow?.states ?? [])].filter((x) => x.type === "unstarted" || x.type === "started").sort(byPosition);
+
 // The key as a binding spells it ("ctrl-s", "escape"): the event's own spelling when it has one.
 function chord(e) {
   if (e.keystroke) return e.keystroke;
@@ -686,9 +689,10 @@ export default class Shortcut extends View {
     return this.chooseBranch(story, d.notes, cx);
   }
 
-  // pickState: the workflow's states that are not done; the one chosen is kept and the start goes on from step 3.
+  // pickState: the workflow's unstarted and started states, the first started one highlighted; the one chosen is kept
+  // and the start goes on from step 3.
   askStartState(story, workflow, cx) {
-    const states = [...(workflow.states ?? [])].filter((x) => x.type !== "done").sort(byPosition);
+    const states = startable(workflow);
     if (!states.length) return this.say(`${workflow.name} has no state to start in`, cx, true);
     this.pick = {
       story, workflow, from: this.screen,
@@ -699,7 +703,7 @@ export default class Shortcut extends View {
       }),
     };
     this.screen = "pickState";
-    this.menu = { kind: "pickState", items: states.map((x) => ({ label: x.name, value: x.id })), at: 0 };
+    this.menu = { kind: "pickState", items: states.map((x) => ({ label: x.name, value: x.id })), at: Math.max(0, states.findIndex((x) => x.type === "started")) };
     this.focus.focus?.();
     cx.notify();
   }
@@ -962,11 +966,11 @@ export default class Shortcut extends View {
     });
   }
 
-  // A workflow's start state: the placeholder (unset) and its states that are not done.
+  // A workflow's start state: the placeholder (unset) and its unstarted and started states.
   openStateMenu(wfId, cx) {
     const wf = (this.ref.workflows?.data ?? []).find((w) => w.id === wfId);
     if (!wf) return;
-    const states = [...(wf.states ?? [])].filter((x) => x.type !== "done").sort(byPosition);
+    const states = startable(wf);
     const items = [{ label: "Please select a start state", value: null }, ...states.map((x) => ({ label: x.name, value: x.id }))];
     const cur = this.cfg.startStates[String(wfId)];
     this.menu = { kind: "startState", wf: wfId, items, at: Math.max(0, items.findIndex((i) => i.value != null && i.value === cur)) };

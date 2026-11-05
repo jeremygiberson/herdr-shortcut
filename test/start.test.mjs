@@ -16,6 +16,18 @@ test("startDecision: a started story keeps its state; already an owner; nothing 
   const d = startDecision({ story: story({ workflow_state_id: 13, owner_ids: ["me"], iteration_id: 5 }), workflow: WF, me, cfg: cfg(), iterations: [] });
   assert.equal(d.patch, null); assert.deepEqual(d.notes, ["state kept: In Review"]);
 });
+test("startDecision: never to an earlier or the same position; a later start state is set", () => {
+  // A backlog start state placed before the story's unstarted state (this workspace's "To be archived").
+  const back = startDecision({ story: story(), workflow: WF, me, cfg: cfg({ startStates: { 1: 10 } }), iterations: [] });
+  assert.equal(back.patch?.workflow_state_id, undefined); assert.deepEqual(back.notes, ["state kept: Ready", "iteration not set: no started iteration for this team"]);
+  const same = startDecision({ story: story(), workflow: WF, me, cfg: cfg({ startStates: { 1: 11 } }), iterations: [] });
+  assert.equal(same.patch?.workflow_state_id, undefined); assert.equal(same.notes[0], "state kept: Ready");
+  const fromBacklog = startDecision({ story: story({ workflow_state_id: 10 }), workflow: WF, me, cfg: cfg({ startStates: { 1: 11 } }), iterations: [] });
+  assert.equal(fromBacklog.patch.workflow_state_id, 11);
+  // Positions decide, not the order the API lists the states in.
+  const shuffled = { ...WF, states: [...WF.states].reverse() };
+  assert.equal(startDecision({ story: story(), workflow: shuffled, me, cfg: cfg(), iterations: [] }).patch.workflow_state_id, 12);
+});
 test("startDecision: done and archived are refused", () => {
   assert.equal(startDecision({ story: story({ workflow_state_id: 14 }), workflow: WF, me, cfg: cfg(), iterations: [] }).refused, "sc-7 is done. Follow-up work belongs in a new story.");
   assert.equal(startDecision({ story: story({ archived: true }), workflow: WF, me, cfg: cfg(), iterations: [] }).refused, "sc-7 is archived.");

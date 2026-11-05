@@ -19,7 +19,7 @@ A popup at the top of the window, 40px down, 80% wide and 80% high, in herdr-lin
 - **story.** Title, key, the story's link, the description as plain text, and a sidebar: state (menu), owners, requester, team, epic, iteration, labels, estimate, deadline, priority (menu, when configured), branches and pull requests.
 - **create.** Name (required), description, then chips for team (your first), workflow state (the team's workflow's first unstarted state), type (feature/bug/chore), epic, iteration, owner (you, toggle) and priority (when configured). On success the new story's screen opens.
 - **settings.** One row per setting, saved on every change (debounced), with "Saved" or the write error. See Settings below.
-- **pickState.** Shown when you start a story whose workflow has no start state yet: "sc-1234 is in the ‹workflow› workflow, which has no start state yet. Pick one:" and the workflow's states that are not done. The choice is saved and the start goes on.
+- **pickState.** Shown when you start a story whose workflow has no start state yet: "sc-1234 is in the ‹workflow› workflow, which has no start state yet. Pick one:" and the workflow's unstarted and started states, the first started one highlighted. The choice is saved and the start goes on.
 - **signIn.** Shown when no token resolves or Shortcut answers 401. It explains the two ways to give a token and has an Open settings button.
 
 ## Keys
@@ -64,7 +64,7 @@ Kept in `~/.config/herdr-app/data/shortcut.json`. A missing or broken file gives
 - **startPrompt.** The agent's first message, given to the launcher. Empty means no prompt.
 - **branchTemplate.** A live preview shows it for a sample story. A result `git check-ref-format --branch` rejects stops the start and points here.
 - Template variables: `{id}` `sc-1234`, `{number}` `1234`, `{slug}` the name lowercased and dashed (48 chars at most), `{title}` the name, `{url}` the story link, `{mention}` your mention name, `{branch}` (prompt only) the chosen branch. Unknown `{…}` stay as typed.
-- **startStates.** Per workflow, the state a story moves to on start (done states are not offered). Unset workflows are marked; the first start in one asks (pickState). A configured state that no longer exists is dropped and asked again.
+- **startStates.** Per workflow, the state a story moves to on start (only unstarted and started states are offered). Unset workflows are marked; the first start in one asks (pickState). A configured state that no longer exists is dropped and asked again.
 - **iteration.** `current-if-unset`: a story without an iteration gets the one started iteration that fits its team (or has no teams). None or several fitting: left alone, and the start says why. `never`: never touched.
 - **priorityField.** An enabled custom field with values. Its value shows on rows and `p` sets it on a story.
 - **launcher.** What opens the work area. See below.
@@ -82,7 +82,7 @@ Kept in `~/.config/herdr-app/data/shortcut.json`. A missing or broken file gives
 1. The story is fetched fresh, and the launcher is checked (installed mod, or a selected space in a git repo).
 2. Done or archived stories are refused: "sc-1234 is done. Follow-up work belongs in a new story."
 3. The update holds only what changes:
-   - The start state, only from a backlog or unstarted state. A started story keeps its state ("state kept: ‹name›").
+   - The start state, only from a backlog or unstarted state, and only when it comes after the story's state in the workflow (never backwards). Otherwise the story keeps its state ("state kept: ‹name›").
    - You appended to the owners, if you are not there yet. Nobody is ever removed.
    - The iteration, per the setting.
 4. Nothing to change means no request. A rejected update is shown, and nothing is launched.
