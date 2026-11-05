@@ -32,8 +32,10 @@ test("no token shows sign-in naming the variable", async () => {
   assert.equal(v.screen, "signIn"); assert.match(texts(v), /SC_UNSET_X/);
 });
 test("401 shows sign-in and keeps the list cache", async () => {
-  await writeCache({ lists: { mine: { at: 0, data: [S(5, "Cached", 11)] } } });
-  const { v } = await open({ cfg: { auth: { token: "bad" } }, routes: { ...basic(), "GET /member": { status: 401, body: { message: "Unauthorized" } } } });
+  await writeCache({ member: { at: Date.now(), data: { id: "me", mention_name: "jer" } }, lists: { mine: { at: 0, data: [S(5, "Cached", 11)] } } });
+  // Every call is refused: the cached member is fresh, so the first call made is not /member.
+  const refused = Object.fromEntries(Object.keys(basic()).map((k) => [k, { status: 401, body: { message: "Unauthorized" } }]));
+  const { v } = await open({ cfg: { auth: { token: "bad" } }, routes: refused });
   assert.equal(v.screen, "signIn");
   assert.deepEqual((await readCache()).lists.mine.data.map((s) => s.id), [5]);
   assert.equal((await readCache()).member, undefined);
@@ -55,6 +57,33 @@ test("a text filter with no local match searches the workspace; a failed refresh
 test("Esc closes from the list, and the footer lists the keys", async () => {
   const { v, cx } = await open({ cfg: { auth: { token: "T" } }, routes: basic() });
   assert.match(texts(v), /start/); assert.match(texts(v), /settings/);
+  pushCommand("escape"); await cx.settle();
+  assert.equal(state.closed, 1);
+});
+test("Esc with a filter clears it and stays, whether or not the filter has the keyboard", async () => {
+  const { v, cx } = await open({ cfg: { auth: { token: "T" } }, routes: basic() });
+  v.input.set_value("beta"); v.found = { id: 1 }; v.searched = { query: "beta", data: [] }; v.at = 3;
+  pushCommand("escape"); await cx.settle();
+  assert.equal(state.closed, 0);
+  assert.equal(v.filter, ""); assert.equal(v.input.value(), ""); assert.equal(v.found, null); assert.equal(v.searched, null); assert.equal(v.at, 0);
+  v.input.emit("focus"); v.input.set_value("alpha");
+  pushCommand("escape"); await cx.settle();
+  assert.equal(state.closed, 0); assert.equal(v.filter, "");
+  pushCommand("escape"); await cx.settle();
+  assert.equal(state.closed, 1);
+});
+test("Esc with an empty filter closes, even while the filter has the keyboard", async () => {
+  const { v, cx } = await open({ cfg: { auth: { token: "T" } }, routes: basic() });
+  v.input.emit("focus"); assert.equal(v.filter, "");
+  pushCommand("escape"); await cx.settle();
+  assert.equal(state.closed, 1);
+});
+test("a command handler that throws shows the error and the next command still works", async () => {
+  const { v, cx } = await open({ cfg: { auth: { token: "T" } }, routes: basic() });
+  const orig = v.escape;
+  v.escape = () => { v.escape = orig; throw new Error("boom"); };
+  pushCommand("escape"); await cx.settle();
+  assert.match(v.err, /command: boom/); assert.match(texts(v), /boom/); assert.equal(state.closed, 0);
   pushCommand("escape"); await cx.settle();
   assert.equal(state.closed, 1);
 });

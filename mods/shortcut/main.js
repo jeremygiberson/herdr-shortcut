@@ -93,11 +93,16 @@ export default class Shortcut extends View {
 
     // keys.json sends these here: Esc (herdr never passes it to a popup as a key), Tab and shift-Tab.
     cx.spawn(async (cx) => {
+      // Guarded as a whole, so one handler that throws doesn't leave Esc and Tab dead for the rest of the popup.
       for (;;) {
-        const c = await nextCommand();
-        if (c === "escape") this.escape(cx);
-        else if ((c === "tab" || c === "backtab") && this.screen === "list") this.step(c === "tab" ? 1 : -1, cx);
-        cx.notify();
+        try {
+          const c = await nextCommand();
+          if (c === "escape") this.escape(cx);
+          else if ((c === "tab" || c === "backtab") && this.screen === "list") this.step(c === "tab" ? 1 : -1, cx);
+          cx.notify();
+        } catch (e) {
+          this.fail("command", e);
+        }
       }
     });
   }
@@ -378,10 +383,13 @@ export default class Shortcut extends View {
     cx.notify();
   }
 
+  // On the list: a filter is cleared first (wherever the keyboard is), an empty one closes the popup.
   escape(cx) {
-    if (this.screen === "list" && this.typing) {
-      this.focus.focus?.();
-      this.typing = false;
+    if (this.screen === "list" && this.filter) {
+      this.input.set_value("");
+      this.filter = "";
+      this.found = this.searched = null;
+      this.at = 0;
       return cx.notify();
     }
     if (this.screen === "list" || this.screen === "signIn") return this.dismiss();
