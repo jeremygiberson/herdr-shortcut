@@ -49,13 +49,15 @@ export function createClient({ token, fetch = globalThis.fetch, wait = (s) => ex
     iterations: () => api("GET", "/iterations"),
     customFields: async () => (await api("GET", "/custom-fields")).filter((f) => f.enabled === true),
     story: (id) => api("GET", `/stories/${id}`),
-    /** Searches stories, following `next` links up to `pages` pages. */
+    /** Searches stories. v3's POST /stories/search answers with a plain array (no paging); a paged
+     *  `{ data, next }` answer is followed through `next` up to `pages` pages. */
     async searchStories(body, { pages = 4 } = {}) {
       const data = [];
       let path = "/stories/search";
       let next = null;
       for (let i = 0; i < pages && path; i++) {
         const page = await api("POST", path, body);
+        if (Array.isArray(page)) return { data: page, cut: false };
         data.push(...(page?.data ?? []));
         next = page?.next ?? null;
         path = next;

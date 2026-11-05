@@ -34,6 +34,12 @@ test("searchStories follows next up to the page limit and says when it cut", asy
   assert.deepEqual(await c.searchStories({ owner_ids: ["m"] }, { pages: 2 }), { data: [1, 2], cut: true });
   assert.deepEqual(await c.searchStories({ owner_ids: ["m"] }), { data: [1, 2, 3], cut: false });
 });
+test("searchStories takes v3's plain-array answer as the whole list", async () => {
+  const f = fakeApi({ "POST /stories/search": [{ id: 1 }, { id: 2 }] });
+  const c = createClient({ token: "T", fetch: f });
+  assert.deepEqual(await c.searchStories({ owner_ids: ["m"] }, { pages: 10 }), { data: [{ id: 1 }, { id: 2 }], cut: false });
+  assert.equal(f.calls.length, 1);
+});
 test("the cache file round-trips and tolerates garbage", async () => {
   assert.deepEqual(await readCache(), {});
   await writeCache({ member: { at: 5, data: { id: "m" } } });
