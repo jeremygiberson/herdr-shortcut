@@ -179,3 +179,18 @@ test("opened with props on a story, Esc goes back to the opener", async () => {
   pushCommand("escape"); await cx.settle();
   assert.equal(state.closed, 1); assert.deepEqual(state.overlays.at(-1), { mod: "projects", kind: "dialog", width: 0.8, height: 0.8, props: { x: 1 } });
 });
+test("p keeps the story's other custom fields in the PUT", async () => {
+  const fields = [{ id: "f1", name: "Priority", enabled: true, values: [{ id: "v1", value: "High", enabled: true, position: 0 }, { id: "v2", value: "Low", enabled: true, position: 1 }] }];
+  const story = { ...S(1, "Alpha", 11), custom_fields: [{ field_id: "f9", value_id: "v9", value: "Big" }] };
+  const { v, cx, fetch } = await open({ cfg: { auth: { token: "T" }, priorityField: "f1" }, routes: { ...basic(), "GET /custom-fields": fields, "GET /stories/1": story, "PUT /stories/1": () => story } });
+  v.input.emit("submit"); await cx.settle();
+  press(v, cx, "p"); press(v, cx, "down"); press(v, cx, "enter"); await cx.settle();
+  assert.deepEqual(fetch.calls.find((c) => c.method === "PUT").body, { custom_fields: [{ field_id: "f9", value_id: "v9" }, { field_id: "f1", value_id: "v2" }] });
+});
+test("Esc with a menu open closes only the menu", async () => {
+  const { v, cx } = await open({ cfg: { auth: { token: "T" } }, routes: { ...basic(), "GET /stories/1": S(1, "Alpha", 11) } });
+  v.input.emit("submit"); await cx.settle();
+  press(v, cx, "t"); assert.notEqual(v.menu, null);
+  pushCommand("escape"); await cx.settle();
+  assert.equal(v.menu, null); assert.equal(v.screen, "story"); assert.equal(state.closed, 0);
+});

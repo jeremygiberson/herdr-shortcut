@@ -534,13 +534,25 @@ export default class Shortcut extends View {
     const s = this.cur;
     if (m && item && s) {
       if (m.kind === "state" && item.value !== s.workflow_state_id) this.update(s, { workflow_state_id: item.value }, `Moved sc-${s.id} to ${item.label}`, cx);
-      else if (m.kind === "priority") this.update(s, { custom_fields: [{ field_id: this.cfg.priorityField, value_id: item.value }] }, `sc-${s.id}'s priority: ${item.label}`, cx);
+      else if (m.kind === "priority") this.update(s, { custom_fields: this.withPriority(s, item.value) }, `sc-${s.id}'s priority: ${item.label}`, cx);
       // "branch" (Task 9) and "launcher" (Task 11) menus are chosen here too.
     }
     cx.notify();
   }
 
+  // custom_fields is the story's whole list: its other fields go along, the priority's replaced in place (or appended).
+  withPriority(story, valueId) {
+    const f = this.cfg.priorityField;
+    const out = (story.custom_fields ?? []).map(({ field_id, value_id }) => ({ field_id, value_id }));
+    const i = out.findIndex((x) => x.field_id === f);
+    if (i >= 0) out[i] = { field_id: f, value_id: valueId };
+    else out.push({ field_id: f, value_id: valueId });
+    return out;
+  }
+
+  // One change at a time: another while one is on its way is ignored.
   update(story, patch, done, cx) {
+    if (this.busy) return;
     this.busy = `Updating sc-${story.id}…`;
     cx.notify();
     cx.spawn(async (cx) => {
