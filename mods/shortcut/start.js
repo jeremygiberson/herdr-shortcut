@@ -25,11 +25,14 @@ export function startDecision({ story, workflow, me, cfg, iterations }) {
   if (startId == null) return { ...out, askState: true };
   if (!states.some((s) => s.id === startId)) return { ...out, askState: true, dropStale: true };
 
-  // Never backwards (spec 8.1 step 4): only from a backlog or unstarted state, and only to a later position.
+  // Never backwards (spec 8.1 step 4): only from a backlog or unstarted state, only to an unstarted or started one
+  // (spec 6: a start state is never backlog or done), and only to a later position.
   const patch = {};
   const pos = (s) => s.position ?? states.indexOf(s);
   const target = states.find((s) => s.id === startId);
-  if ((current?.type === "backlog" || current?.type === "unstarted") && pos(target) > pos(current)) patch.workflow_state_id = startId;
+  const from = current?.type === "backlog" || current?.type === "unstarted";
+  const to = target.type === "unstarted" || target.type === "started";
+  if (from && to && pos(target) > pos(current)) patch.workflow_state_id = startId;
   else out.notes.push(`state kept: ${current ? current.name : "unknown"}`);
 
   const owners = story.owner_ids || [];

@@ -28,6 +28,11 @@ test("startDecision: never to an earlier or the same position; a later start sta
   const shuffled = { ...WF, states: [...WF.states].reverse() };
   assert.equal(startDecision({ story: story(), workflow: shuffled, me, cfg: cfg(), iterations: [] }).patch.workflow_state_id, 12);
 });
+test("startDecision: a backlog start state is never applied, even after the story's position", () => {
+  const wf = { id: 1, name: "Eng", states: [{ id: 1, name: "Icebox", type: "backlog", position: 1 }, { id: 2, name: "To be archived", type: "backlog", position: 2 }, { id: 3, name: "Ready", type: "unstarted", position: 3 }] };
+  const d = startDecision({ story: story({ workflow_state_id: 1 }), workflow: wf, me, cfg: cfg({ startStates: { 1: 2 }, iteration: "never" }), iterations: [] });
+  assert.equal(d.patch?.workflow_state_id, undefined); assert.deepEqual(d.notes, ["state kept: Icebox"]);
+});
 test("startDecision: done and archived are refused", () => {
   assert.equal(startDecision({ story: story({ workflow_state_id: 14 }), workflow: WF, me, cfg: cfg(), iterations: [] }).refused, "sc-7 is done. Follow-up work belongs in a new story.");
   assert.equal(startDecision({ story: story({ archived: true }), workflow: WF, me, cfg: cfg(), iterations: [] }).refused, "sc-7 is archived.");
